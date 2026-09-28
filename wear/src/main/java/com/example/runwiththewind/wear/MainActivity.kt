@@ -1,9 +1,11 @@
 package com.example.runwiththewind.wear
 
 import android.Manifest
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.location.LocationManager
@@ -16,16 +18,22 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.VerticalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.DirectionsRun
 import androidx.compose.material.icons.filled.GpsFixed
@@ -33,6 +41,10 @@ import androidx.compose.material.icons.filled.GpsNotFixed
 import androidx.compose.material.icons.filled.GpsOff
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -44,6 +56,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.input.rotary.onRotaryScrollEvent
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
@@ -70,6 +87,7 @@ import androidx.wear.compose.material3.Text
 import androidx.wear.compose.material3.lazy.rememberTransformationSpec
 import androidx.wear.compose.material3.lazy.transformedHeight
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.time.Instant
 import java.util.concurrent.TimeUnit
 
@@ -124,8 +142,6 @@ class MainActivity : ComponentActivity() {
         val service = exerciseService ?: return
         val update = service.exerciseState.value ?: return
 
-        val elapsed = if (service.startTimeMillis > 0) System.currentTimeMillis() - service.startTimeMillis else 0L
-
         val checkpoint = update.activeDurationCheckpoint
         val state = update.exerciseStateInfo.state
         val moving = if (checkpoint != null && state == ExerciseState.ACTIVE) {
@@ -136,13 +152,20 @@ class MainActivity : ComponentActivity() {
         }
 
         val distance = service.totalDistance.value
+        val avgPace = service.averagePace.value
 
-        summaryData = RunSummary(elapsed, moving, distance)
+        summaryData = RunSummary(moving, distance, avgPace)
         service.stopExercise()
         screenState = ScreenState.SUMMARY
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val splashScreen = installSplashScreen()
+        val startTime = System.currentTimeMillis()
+        splashScreen.setKeepOnScreenCondition {
+            val elapsed = System.currentTimeMillis() - startTime
+            !(isBound && exerciseService != null && elapsed >= 1500)
+        }
         super.onCreate(savedInstanceState)
 
         val intent = Intent(this, ExerciseService::class.java)
@@ -169,6 +192,43 @@ class MainActivity : ComponentActivity() {
                 lifecycleOwner.lifecycle.addObserver(observer)
                 onDispose {
                     lifecycleOwner.lifecycle.removeObserver(observer)
+                }
+            }
+
+            // Listen for system location provider changes (e.g. toggled via Quick Settings tray)
+            DisposableEffect(context) {
+                val receiver = object : BroadcastReceiver() {
+                    override fun onReceive(context: Context?, intent: Intent?) {
+                        if (intent?.action == LocationManager.PROVIDERS_CHANGED_ACTION) {
+                            permissionsGranted = checkAllPermissions(context ?: return)
+                            gpsEnabled = isGpsEnabled(context)
+                        }
+                    }
+                }
+                val filter = IntentFilter(LocationManager.PROVIDERS_CHANGED_ACTION)
+                ContextCompat.registerReceiver(
+                    context,
+                    receiver,
+                    filter,
+                    ContextCompat.RECEIVER_NOT_EXPORTED
+                )
+                onDispose {
+                    try {
+                        context.unregisterReceiver(receiver)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+            }
+
+            // Periodic check while on RUN_PREPARE screen to handle quick settings / options tray toggles
+            LaunchedEffect(screenState) {
+                while (screenState == ScreenState.RUN_PREPARE) {
+                    val newGps = isGpsEnabled(context)
+                    val newPerms = checkAllPermissions(context)
+                    if (newGps != gpsEnabled) gpsEnabled = newGps
+                    if (newPerms != permissionsGranted) permissionsGranted = newPerms
+                    delay(1000)
                 }
             }
 
@@ -270,9 +330,9 @@ enum class ScreenState {
 }
 
 data class RunSummary(
-    val elapsedTime: Long,
     val movingTime: Long,
-    val distance: Double
+    val distance: Double,
+    val averagePace: Double
 )
 
 @Composable
@@ -299,7 +359,7 @@ fun ActivitiesScreen(onRunClick: () -> Unit) {
             item {
                 Button(
                     modifier = Modifier
-                        .fillMaxWidth()
+                        .fillMaxWidth(0.9f)
                         .padding(top = 8.dp)
                         .transformedHeight(this, transformationSpec),
                     transformation = SurfaceTransformation(transformationSpec),
@@ -307,7 +367,8 @@ fun ActivitiesScreen(onRunClick: () -> Unit) {
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
+                        horizontalArrangement = Arrangement.Center,
+                        modifier = Modifier.fillMaxWidth()
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.DirectionsRun,
@@ -315,7 +376,7 @@ fun ActivitiesScreen(onRunClick: () -> Unit) {
                             modifier = Modifier.size(ButtonDefaults.IconSize)
                         )
                         Spacer(Modifier.width(8.dp))
-                        Text("Run")
+                        Text("Run", textAlign = TextAlign.Center)
                     }
                 }
             }
@@ -335,6 +396,18 @@ fun RunPrepareScreen(
     val columnState = rememberTransformingLazyColumnState()
     val transformationSpec = rememberTransformationSpec()
     val context = LocalContext.current
+
+    var isStarting by remember { mutableStateOf(false) }
+
+    LaunchedEffect(permissionsGranted, gpsEnabled) {
+        isStarting = false
+    }
+
+    LaunchedEffect(serviceStatus) {
+        if (serviceStatus is ServiceStatus.Error) {
+            isStarting = false
+        }
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -368,7 +441,7 @@ fun RunPrepareScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 4.dp),
+                        .padding(top = 5.dp, bottom = 1.dp),
                     horizontalArrangement = Arrangement.Center,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -376,11 +449,11 @@ fun RunPrepareScreen(
                         imageVector = gpsIcon,
                         contentDescription = "GPS Status",
                         tint = gpsColor,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                     Spacer(Modifier.width(4.dp))
                     Text(
-                        text = "GPS Status",
+                        text = "GPS",
                         style = MaterialTheme.typography.labelSmall
                     )
                 }
@@ -400,10 +473,22 @@ fun RunPrepareScreen(
             if (!gpsEnabled) {
                 item {
                     Text(
-                        text = "GPS is disabled. Please enable it in settings.",
+                        text = "GPS is disabled.",
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(8.dp),
+                        modifier = Modifier.padding(3.dp),
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+
+            if (serviceStatus is ServiceStatus.Error) {
+                item {
+                    Text(
+                        text = serviceStatus.message,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(3.dp),
                         textAlign = TextAlign.Center
                     )
                 }
@@ -412,10 +497,11 @@ fun RunPrepareScreen(
             item {
                 Button(
                     modifier = Modifier
-                        .fillMaxWidth()
+                        .fillMaxWidth(0.9f)
                         .padding(top = 8.dp)
                         .transformedHeight(this, transformationSpec),
                     transformation = SurfaceTransformation(transformationSpec),
+                    enabled = !isStarting && serviceStatus !is ServiceStatus.Starting,
                     onClick = {
                         // Refresh status before acting
                         onRefreshStatus()
@@ -432,6 +518,7 @@ fun RunPrepareScreen(
                             val intent = Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
                             context.startActivity(intent)
                         } else {
+                            isStarting = true
                             onStart()
                         }
                     }
@@ -440,9 +527,11 @@ fun RunPrepareScreen(
                         text = when {
                             !permissionsGranted -> "Grant Permissions"
                             !gpsEnabled -> "Enable GPS"
-                            serviceStatus is ServiceStatus.Starting -> "Starting..."
+                            isStarting -> "Starting..."
                             else -> "Start"
-                        }
+                        },
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
             }
@@ -450,14 +539,89 @@ fun RunPrepareScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun WorkoutScreen(
     service: ExerciseService,
     onFinish: (RunSummary) -> Unit
 ) {
-    val isRecording by service.isRecording.collectAsState()
+    val horizontalPagerState = rememberPagerState(pageCount = { 2 })
+
+    HorizontalPager(
+        state = horizontalPagerState,
+        modifier = Modifier.fillMaxSize()
+    ) { horizontalPage ->
+        if (horizontalPage == 0) {
+            MetricsVerticalPager(service)
+        } else {
+            ControlsScreen(
+                service = service,
+                onFinish = {
+                    val checkpoint = service.exerciseState.value?.activeDurationCheckpoint
+                    val state = service.exerciseState.value?.exerciseStateInfo?.state
+                    val now = System.currentTimeMillis()
+                    val moving = if (checkpoint != null && state == ExerciseState.ACTIVE) {
+                        val delta = now - checkpoint.time.toEpochMilli()
+                        checkpoint.activeDuration.toMillis() + delta
+                    } else {
+                        checkpoint?.activeDuration?.toMillis() ?: 0L
+                    }
+                    val distance = service.totalDistance.value
+                    val avgPace = service.averagePace.value
+                    onFinish(RunSummary(moving, distance, avgPace))
+                }
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun MetricsVerticalPager(service: ExerciseService) {
+    val verticalPagerState = rememberPagerState(pageCount = { 3 })
+    val coroutineScope = rememberCoroutineScope()
+    val focusRequester = remember { FocusRequester() }
+
+    VerticalPager(
+        state = verticalPagerState,
+        modifier = Modifier
+            .fillMaxSize()
+            .onRotaryScrollEvent { event ->
+                val delta = event.verticalScrollPixels
+                if (delta > 0 && verticalPagerState.currentPage < verticalPagerState.pageCount - 1) {
+                    coroutineScope.launch {
+                        verticalPagerState.animateScrollToPage(verticalPagerState.currentPage + 1)
+                    }
+                    true
+                } else if (delta < 0 && verticalPagerState.currentPage > 0) {
+                    coroutineScope.launch {
+                        verticalPagerState.animateScrollToPage(verticalPagerState.currentPage - 1)
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
+            .focusRequester(focusRequester)
+            .focusable()
+    ) { page ->
+        when (page) {
+            0 -> Screen1Overview(service)
+            1 -> Screen2SplitInfo(service)
+            2 -> Screen3HealthElevation(service)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        focusRequester.requestFocus()
+    }
+}
+
+@Composable
+fun Screen1Overview(service: ExerciseService) {
     val exerciseUpdate by service.exerciseState.collectAsState()
     val distance by service.totalDistance.collectAsState()
+    val avgPace by service.averagePace.collectAsState()
 
     val currentTime by produceState(initialValue = System.currentTimeMillis()) {
         while (true) {
@@ -466,10 +630,7 @@ fun WorkoutScreen(
         }
     }
 
-    val elapsedTime = if (service.startTimeMillis > 0) currentTime - service.startTimeMillis else 0L
-
     val exerciseState = exerciseUpdate?.exerciseStateInfo?.state ?: ExerciseState.ACTIVE
-
     val movingTime = remember(exerciseUpdate, currentTime) {
         val checkpoint = exerciseUpdate?.activeDurationCheckpoint
         if (checkpoint != null && exerciseState == ExerciseState.ACTIVE) {
@@ -480,68 +641,135 @@ fun WorkoutScreen(
         }
     }
 
-    val columnState = rememberTransformingLazyColumnState()
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        MetricDisplay("Moving Time", formatTime(movingTime))
+        MetricDisplay("Avg Pace [min/km]", formatPace(avgPace))
+        MetricDisplay("Distance [km]", formatDistance(distance))
+    }
+}
 
-    ScreenScaffold(scrollState = columnState) { contentPadding ->
-        TransformingLazyColumn(
-            state = columnState,
-            contentPadding = contentPadding,
-            horizontalAlignment = Alignment.CenterHorizontally
+@Composable
+fun Screen2SplitInfo(service: ExerciseService) {
+    val exerciseUpdate by service.exerciseState.collectAsState()
+    val distance by service.totalDistance.collectAsState()
+    val splitPace by service.currentSplitPace.collectAsState()
+    val currentPace by service.currentPace.collectAsState()
+
+    val currentTime by produceState(initialValue = System.currentTimeMillis()) {
+        while (true) {
+            value = System.currentTimeMillis()
+            delay(1000)
+        }
+    }
+
+    val exerciseState = exerciseUpdate?.exerciseStateInfo?.state ?: ExerciseState.ACTIVE
+    val movingTime = remember(exerciseUpdate, currentTime) {
+        val checkpoint = exerciseUpdate?.activeDurationCheckpoint
+        if (checkpoint != null && exerciseState == ExerciseState.ACTIVE) {
+            val delta = currentTime - checkpoint.time.toEpochMilli()
+            checkpoint.activeDuration.toMillis() + delta
+        } else {
+            checkpoint?.activeDuration?.toMillis() ?: 0L
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        MetricDisplay("Distance [km]", formatDistance(distance))
+        MetricDisplay("Split Pace [min/km]", formatPace(splitPace))
+        MetricDisplay("Pace [min/km]", formatPace(currentPace))
+        MetricDisplay("Moving Time", formatTime(movingTime))
+    }
+}
+
+@Composable
+fun Screen3HealthElevation(service: ExerciseService) {
+    val heartRate by service.heartRate.collectAsState()
+    val elevationGain by service.elevationGain.collectAsState()
+
+    val currentTime by produceState(initialValue = System.currentTimeMillis()) {
+        while (true) {
+            value = System.currentTimeMillis()
+            delay(1000)
+        }
+    }
+
+    val elapsedTime = if (service.startTimeMillis > 0) currentTime - service.startTimeMillis else 0L
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        MetricDisplay("Heart Rate", if (heartRate > 0) "%.0f BPM".format(heartRate) else "-- BPM")
+        MetricDisplay("Elevation Gain", "%.1f m".format(elevationGain))
+        MetricDisplay("Elapsed Time", formatTime(elapsedTime))
+    }
+}
+
+@Composable
+fun ControlsScreen(
+    service: ExerciseService,
+    onFinish: () -> Unit
+) {
+    val exerciseUpdate by service.exerciseState.collectAsState()
+    val exerciseState = exerciseUpdate?.exerciseStateInfo?.state ?: ExerciseState.ACTIVE
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(
+            text = "Controls",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(bottom = 12.dp)
+        )
+        if (exerciseState.isPaused) {
+            Button(
+                onClick = { service.resumeExercise() },
+                modifier = Modifier
+                    .fillMaxWidth(0.85f)
+                    .padding(vertical = 4.dp)
+            ) {
+                Text("Resume", textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+            }
+        } else {
+            Button(
+                onClick = { service.pauseExercise() },
+                modifier = Modifier
+                    .fillMaxWidth(0.85f)
+                    .padding(vertical = 4.dp)
+            ) {
+                Text("Pause", textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+            }
+        }
+        Button(
+            onClick = onFinish,
+            modifier = Modifier
+                .fillMaxWidth(0.85f)
+                .padding(vertical = 4.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.error
+            )
         ) {
-            item {
-                Text(
-                    text = "Tracking",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-
-            item {
-                MetricDisplay("Elapsed", formatTime(elapsedTime))
-            }
-            item {
-                MetricDisplay("Moving", formatTime(movingTime))
-            }
-            item {
-                MetricDisplay("Distance", "%.2f m".format(distance))
-            }
-
-            item {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp),
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    if (exerciseState.isPaused) {
-                        Button(
-                            onClick = { service.resumeExercise() },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Resume")
-                        }
-                    } else {
-                        Button(
-                            onClick = { service.pauseExercise() },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("Pause")
-                        }
-                    }
-                    Spacer(Modifier.width(8.dp))
-                    Button(
-                        onClick = {
-                            onFinish(RunSummary(elapsedTime, movingTime, distance))
-                        },
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.error
-                        )
-                    ) {
-                        Text("Finish")
-                    }
-                }
-            }
+            Text("Finish", textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
         }
     }
 }
@@ -558,31 +786,34 @@ fun SummaryScreen(summary: RunSummary, onRecord: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             item {
-                Text(
-                    text = "Run Summary",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                ListHeader(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .transformedHeight(this, transformationSpec),
+                    transformation = SurfaceTransformation(transformationSpec)
+                ) {
+                    Text(text = "Run Summary")
+                }
             }
             item {
-                MetricDisplay("Total Elapsed", formatTime(summary.elapsedTime))
+                MetricDisplay("Distance Covered", "${formatDistance(summary.distance)} km")
             }
             item {
-                MetricDisplay("Total Moving", formatTime(summary.movingTime))
+                MetricDisplay("Moving Time Taken", formatTime(summary.movingTime))
             }
             item {
-                MetricDisplay("Total Distance", "%.2f m".format(summary.distance))
+                MetricDisplay("Average Pace", "${formatPace(summary.averagePace)} min/km")
             }
             item {
                 Button(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp)
+                        .fillMaxWidth(0.9f)
+                        .padding(top = 12.dp)
                         .transformedHeight(this, transformationSpec),
                     transformation = SurfaceTransformation(transformationSpec),
                     onClick = onRecord
                 ) {
-                    Text("Record & Exit")
+                    Text("Done", textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
                 }
             }
         }
@@ -594,7 +825,7 @@ fun MetricDisplay(label: String, value: String) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp),
+            .padding(vertical = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(text = label, style = MaterialTheme.typography.labelSmall)
@@ -602,28 +833,41 @@ fun MetricDisplay(label: String, value: String) {
     }
 }
 
+fun formatDistance(meters: Double): String {
+    return "%.2f".format(meters / 1000.0)
+}
+
 fun formatTime(millis: Long): String {
     val hours = TimeUnit.MILLISECONDS.toHours(millis)
     val minutes = TimeUnit.MILLISECONDS.toMinutes(millis) % 60
     val seconds = TimeUnit.MILLISECONDS.toSeconds(millis) % 60
     return if (hours > 0) {
-        "%02d:%02d:%02d".format(hours, minutes, seconds)
+        "%d:%02d:%02d".format(hours, minutes, seconds)
     } else {
         "%02d:%02d".format(minutes, seconds)
     }
 }
 
+fun formatPace(paceMinPerKm: Double): String {
+    if (paceMinPerKm <= 0.0 || paceMinPerKm.isInfinite() || paceMinPerKm.isNaN()) return "--:--"
+    val minutes = paceMinPerKm.toInt()
+    val seconds = ((paceMinPerKm - minutes) * 60).toInt()
+    return "%d:%02d".format(minutes, seconds.coerceIn(0, 59))
+}
+
 @Composable
 fun LoadingScreen() {
-    val columnState = rememberTransformingLazyColumnState()
-    ScreenScaffold(scrollState = columnState) { contentPadding ->
-        TransformingLazyColumn(
-            state = columnState,
-            contentPadding = contentPadding
-        ) {
-            item {
-                Text(text = "Initializing service...", style = MaterialTheme.typography.bodyMedium)
-            }
-        }
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            painter = painterResource(id = R.drawable.run_with_wind),
+            contentDescription = "Run with the Wind Logo",
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(CircleShape),
+            contentScale = ContentScale.Crop
+        )
     }
 }

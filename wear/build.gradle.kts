@@ -39,6 +39,7 @@ android {
 
 dependencies {
     implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.core.splashscreen)
     implementation(libs.play.services.wearable)
     implementation(libs.androidx.health.services)
     implementation(libs.guava)
