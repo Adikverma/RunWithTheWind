@@ -286,10 +286,10 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // Prepare exercise when entering RUN_PREPARE
-                    LaunchedEffect(screenState, permissionsGranted, gpsEnabled) {
-                        if (screenState == ScreenState.RUN_PREPARE && permissionsGranted && gpsEnabled) {
-                            if (serviceStatus is ServiceStatus.Idle) {
+                    // Prepare exercise on app load and when permissions/GPS are ready
+                    LaunchedEffect(isBound, permissionsGranted, gpsEnabled, screenState) {
+                        if (isBound && exerciseService != null && permissionsGranted && gpsEnabled) {
+                            if (exerciseService!!.serviceStatus.value is ServiceStatus.Idle) {
                                 exerciseService?.prepareExercise()
                             }
                         }
@@ -450,11 +450,6 @@ fun RunPrepareScreen(
                         contentDescription = "GPS Status",
                         tint = gpsColor,
                         modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        text = "GPS",
-                        style = MaterialTheme.typography.labelSmall
                     )
                 }
             }

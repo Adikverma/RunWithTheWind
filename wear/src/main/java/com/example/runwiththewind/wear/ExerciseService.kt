@@ -132,6 +132,11 @@ class ExerciseService : Service() {
     }
 
     fun prepareExercise() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+            != PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+
         if (!isGpsEnabled()) {
             _locationAvailability.value = LocationAvailability.NO_GNSS
             return
