@@ -849,7 +849,7 @@ fun formatTime(millis: Long): String {
 }
 
 fun formatPace(paceMinPerKm: Double): String {
-    if (paceMinPerKm <= 0.0 || paceMinPerKm.isInfinite() || paceMinPerKm.isNaN()) return "--:--"
+    if (paceMinPerKm <= 0.0 || paceMinPerKm > 99.0 || paceMinPerKm.isInfinite() || paceMinPerKm.isNaN()) return "--:--"
     val minutes = paceMinPerKm.toInt()
     val seconds = ((paceMinPerKm - minutes) * 60).toInt()
     return "%d:%02d".format(minutes, seconds.coerceIn(0, 59))

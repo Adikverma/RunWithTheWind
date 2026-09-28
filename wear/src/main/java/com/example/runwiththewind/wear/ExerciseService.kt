@@ -18,6 +18,7 @@ import androidx.core.content.ContextCompat
 import androidx.health.services.client.HealthServices
 import androidx.health.services.client.data.DataType
 import androidx.health.services.client.data.ExerciseConfig
+import androidx.health.services.client.data.ExerciseState
 import androidx.health.services.client.data.ExerciseType
 import androidx.health.services.client.data.ExerciseUpdate
 import androidx.health.services.client.ExerciseUpdateCallback
@@ -97,6 +98,9 @@ class ExerciseService : Service() {
     private var splitStartMovingMillis = 0L
     private var splitStartDistance = 0.0
     private var lastSplitIndex = 1
+
+    private var accumulatedGpsDistance = 0.0
+    private var accumulatedIntervalDistance = 0.0
 
     private val locationSamples = ArrayDeque<LocationSample>()
     private var smoothedSpeedMps: Double = 0.0
@@ -179,6 +183,7 @@ class ExerciseService : Service() {
                 DataType.HEART_RATE_BPM,
                 DataType.LOCATION,
                 DataType.PACE,
+                DataType.SPEED,
                 DataType.ELEVATION_GAIN,
                 DataType.DISTANCE,
                 DataType.DISTANCE_TOTAL
@@ -207,6 +212,8 @@ class ExerciseService : Service() {
         _totalDistance.value = 0.0
         _startTimeMillis = System.currentTimeMillis()
         _serviceStatus.value = ServiceStatus.Starting
+        accumulatedGpsDistance = 0.0
+        accumulatedIntervalDistance = 0.0
         locationSamples.clear()
         smoothedSpeedMps = 0.0
         splitStartMovingMillis = 0L
@@ -250,9 +257,6 @@ class ExerciseService : Service() {
         } catch (e: Exception) {
             e.printStackTrace()
         }
-        
-        // Save complete workout data for export (disabled for now)
-        // saveWorkoutExport()
 
         _isRecording.value = false
         if (!keepError) {
@@ -268,26 +272,33 @@ class ExerciseService : Service() {
         stopSelf()
     }
 
-    /*
-    private fun saveWorkoutExport() {
-        try {
-            val file = File(filesDir, "workout_export_${System.currentTimeMillis()}.json")
-            val summaryText = "Workout Export:\nDistance: ${_totalDistance.value}m\nHeart Rate: ${_heartRate.value}\nElevation Gain: ${_elevationGain.value}m\nHistory points: ${_workoutHistory.size}"
-            file.writeText(summaryText)
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-    */
-
     private val exerciseUpdateCallback = object : ExerciseUpdateCallback {
         override fun onExerciseUpdateReceived(update: ExerciseUpdate) {
             _exerciseState.value = update
             _workoutHistory.add(update)
-            
-            // Total Distance (Health Services Single Source of Truth)
+
+            val checkpoint = update.activeDurationCheckpoint
+            val exerciseState = update.exerciseStateInfo.state
+            val now = System.currentTimeMillis()
+            val activeMillis = if (checkpoint != null && exerciseState == ExerciseState.ACTIVE) {
+                val delta = now - checkpoint.time.toEpochMilli()
+                (checkpoint.activeDuration.toMillis() + delta).coerceAtLeast(0L)
+            } else {
+                checkpoint?.activeDuration?.toMillis() ?: 0L
+            }
+
+            // Total Distance (Health Services Single Source of Truth + Fallbacks)
+            var hsDist = 0.0
             update.latestMetrics.getData(DataType.DISTANCE_TOTAL)?.let {
-                _totalDistance.value = it.total
+                hsDist = it.total
+            }
+            if (hsDist == 0.0) {
+                val distPoints = update.latestMetrics.getData(DataType.DISTANCE)
+                val sumIntervals = distPoints.sumOf { it.value }
+                if (sumIntervals > 0.0) {
+                    accumulatedIntervalDistance += sumIntervals
+                    hsDist = accumulatedIntervalDistance
+                }
             }
 
             // Heart Rate
@@ -311,7 +322,11 @@ class ExerciseService : Service() {
                 _elevationGain.value = v
             }
 
-            // Location & Rolling Window EMA Current Pace
+            // Speed & Location
+            val speedFromHs = try {
+                update.latestMetrics.getData(DataType.SPEED).lastOrNull()?.value
+            } catch (e: Exception) { null }
+
             update.latestMetrics.getData(DataType.LOCATION).lastOrNull()?.let { locPoint ->
                 val lat = locPoint.value.latitude
                 val lng = locPoint.value.longitude
@@ -320,16 +335,15 @@ class ExerciseService : Service() {
                     (method.invoke(locPoint) as? Float) ?: 5.0f
                 } catch (e: Exception) { 5.0f }
 
-                val rawSpeed = update.latestMetrics.getData(DataType.PACE).lastOrNull()?.value ?: 0.0
-                processLocationUpdate(lat, lng, accuracy, rawSpeed, System.currentTimeMillis())
+                processLocationUpdate(lat, lng, accuracy, speedFromHs, now)
             }
 
-            val checkpoint = update.activeDurationCheckpoint
-            val activeMillis = checkpoint?.activeDuration?.toMillis() ?: 0L
-            val dist = _totalDistance.value
+            // Total Distance calculation
+            val effectiveDistance = maxOf(hsDist, accumulatedGpsDistance)
+            _totalDistance.value = effectiveDistance
 
             // 1km Split Tracking
-            val splitIdx = (dist / 1000.0).toInt() + 1
+            val splitIdx = (effectiveDistance / 1000.0).toInt() + 1
             if (splitIdx > lastSplitIndex) {
                 lastSplitIndex = splitIdx
                 splitStartMovingMillis = activeMillis
@@ -337,20 +351,20 @@ class ExerciseService : Service() {
             }
 
             _currentSplitIndex.value = splitIdx
-            val currentSplitDistMeters = dist - splitStartDistance
+            val currentSplitDistMeters = (effectiveDistance - splitStartDistance).coerceAtLeast(0.0)
             _currentSplitDistance.value = currentSplitDistMeters
 
             // Current Split Pace (min/km)
-            val currentSplitActiveMillis = activeMillis - splitStartMovingMillis
-            if (currentSplitActiveMillis > 0 && currentSplitDistMeters > 20.0) {
+            val currentSplitActiveMillis = (activeMillis - splitStartMovingMillis).coerceAtLeast(0L)
+            if (currentSplitActiveMillis > 0 && currentSplitDistMeters >= 15.0) {
                 _currentSplitPace.value = (currentSplitActiveMillis / 60000.0) / (currentSplitDistMeters / 1000.0)
             } else {
                 _currentSplitPace.value = _currentPace.value
             }
 
-            // Average Pace (min/km) - Health Services active duration / total distance
-            if (activeMillis > 0 && dist > 10.0) {
-                _averagePace.value = (activeMillis / 60000.0) / (dist / 1000.0)
+            // Average Pace (min/km)
+            if (activeMillis > 0 && effectiveDistance >= 5.0) {
+                _averagePace.value = (activeMillis / 60000.0) / (effectiveDistance / 1000.0)
             } else {
                 _averagePace.value = 0.0
             }
@@ -373,55 +387,66 @@ class ExerciseService : Service() {
         latitude: Double,
         longitude: Double,
         accuracy: Float,
-        rawSpeedMps: Double,
+        speedMpsFromHs: Double?,
         timeMillis: Long
     ) {
-        if (accuracy > 15.0f) return
-        if (rawSpeedMps > 12.0) return
+        if (accuracy > 20.0f) return
 
         val lastSample = locationSamples.peekLast()
         if (lastSample != null) {
             val dtSec = (timeMillis - lastSample.timeMillis) / 1000.0
-            if (dtSec > 0.2) {
-                val dist = calculateDistanceBetween(lastSample.latitude, lastSample.longitude, latitude, longitude)
-                val impliedSpeed = dist / dtSec
-                if (impliedSpeed > 12.0) return
+            if (dtSec > 0.1) {
+                val distMeters = calculateDistanceBetween(
+                    lastSample.latitude, lastSample.longitude,
+                    latitude, longitude
+                )
+                val impliedSpeed = distMeters / dtSec
+
+                if (impliedSpeed > 15.0) return
+
+                if (accuracy <= 15.0f && impliedSpeed >= 0.2) {
+                    accumulatedGpsDistance += distMeters
+                }
             }
         }
 
-        val sample = LocationSample(timeMillis, latitude, longitude, accuracy, rawSpeedMps)
+        val sample = LocationSample(timeMillis, latitude, longitude, accuracy, speedMpsFromHs ?: 0.0)
         locationSamples.addLast(sample)
 
-        val cutoff = timeMillis - 15_000L
+        val cutoff = timeMillis - 12_000L
         while (locationSamples.isNotEmpty() && locationSamples.first.timeMillis < cutoff) {
             locationSamples.removeFirst()
         }
 
-        val windowSpeed = calculateWindowSpeed(locationSamples, rawSpeedMps)
+        val windowSpeed = calculateWindowSpeed(locationSamples)
 
-        if (smoothedSpeedMps <= 0.05) {
-            smoothedSpeedMps = windowSpeed
-        } else if (windowSpeed > 0.05) {
-            smoothedSpeedMps = 0.7 * smoothedSpeedMps + 0.3 * windowSpeed
-        } else {
-            smoothedSpeedMps = 0.7 * smoothedSpeedMps
+        val instantSpeed = when {
+            speedMpsFromHs != null && speedMpsFromHs in 0.2..15.0 -> speedMpsFromHs
+            windowSpeed in 0.2..15.0 -> windowSpeed
+            else -> 0.0
         }
 
-        if (smoothedSpeedMps > 0.1) {
+        if (instantSpeed < 0.25) {
+            smoothedSpeedMps = 0.0
+        } else if (smoothedSpeedMps < 0.25) {
+            smoothedSpeedMps = instantSpeed
+        } else {
+            smoothedSpeedMps = 0.75 * smoothedSpeedMps + 0.25 * instantSpeed
+        }
+
+        if (smoothedSpeedMps >= 0.25) {
             _currentPace.value = (1000.0 / smoothedSpeedMps) / 60.0
         } else {
             _currentPace.value = 0.0
         }
     }
 
-    private fun calculateWindowSpeed(samples: ArrayDeque<LocationSample>, fallbackSpeed: Double): Double {
-        if (samples.size < 2) {
-            return if (fallbackSpeed in 0.1..12.0) fallbackSpeed else 0.0
-        }
+    private fun calculateWindowSpeed(samples: ArrayDeque<LocationSample>): Double {
+        if (samples.size < 2) return 0.0
         val first = samples.first
         val last = samples.last
         val dtSec = (last.timeMillis - first.timeMillis) / 1000.0
-        if (dtSec <= 0.5) return fallbackSpeed
+        if (dtSec < 1.0) return 0.0
 
         var windowDistance = 0.0
         var prev = first
@@ -432,8 +457,7 @@ class ExerciseService : Service() {
             }
         }
 
-        val windowSpeed = windowDistance / dtSec
-        return if (windowSpeed in 0.1..12.0) windowSpeed else fallbackSpeed
+        return windowDistance / dtSec
     }
 
     private fun calculateDistanceBetween(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
