@@ -1,7 +1,7 @@
 package com.example.runwiththewind.wear
 
 import android.Manifest
-import android.R
+//noinspection SuspiciousImport
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -566,7 +566,7 @@ class ExerciseService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Run with the Wind")
             .setContentText("Recording your run...")
-            .setSmallIcon(R.drawable.ic_media_play)
+            .setSmallIcon(R.drawable.run_with_wind)
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_WORKOUT)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
