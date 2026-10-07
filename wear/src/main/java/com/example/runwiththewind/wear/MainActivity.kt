@@ -140,17 +140,7 @@ class MainActivity : ComponentActivity() {
 
     private fun performFinish() {
         val service = exerciseService ?: return
-        val update = service.exerciseState.value ?: return
-
-        val checkpoint = update.activeDurationCheckpoint
-        val state = update.exerciseStateInfo.state
-        val moving = if (checkpoint != null && state == ExerciseState.ACTIVE) {
-            val delta = System.currentTimeMillis() - checkpoint.time.toEpochMilli()
-            checkpoint.activeDuration.toMillis() + delta
-        } else {
-            checkpoint?.activeDuration?.toMillis() ?: 0L
-        }
-
+        val moving = service.activeDurationMillis.value
         val distance = service.totalDistance.value
         val avgPace = service.averagePace.value
 
@@ -552,15 +542,7 @@ fun WorkoutScreen(
             ControlsScreen(
                 service = service,
                 onFinish = {
-                    val checkpoint = service.exerciseState.value?.activeDurationCheckpoint
-                    val state = service.exerciseState.value?.exerciseStateInfo?.state
-                    val now = System.currentTimeMillis()
-                    val moving = if (checkpoint != null && state == ExerciseState.ACTIVE) {
-                        val delta = now - checkpoint.time.toEpochMilli()
-                        checkpoint.activeDuration.toMillis() + delta
-                    } else {
-                        checkpoint?.activeDuration?.toMillis() ?: 0L
-                    }
+                    val moving = service.activeDurationMillis.value
                     val distance = service.totalDistance.value
                     val avgPace = service.averagePace.value
                     onFinish(RunSummary(moving, distance, avgPace))
@@ -614,27 +596,9 @@ fun MetricsVerticalPager(service: ExerciseService) {
 
 @Composable
 fun Screen1Overview(service: ExerciseService) {
-    val exerciseUpdate by service.exerciseState.collectAsState()
+    val movingTime by service.activeDurationMillis.collectAsState()
     val distance by service.totalDistance.collectAsState()
     val avgPace by service.averagePace.collectAsState()
-
-    val currentTime by produceState(initialValue = System.currentTimeMillis()) {
-        while (true) {
-            value = System.currentTimeMillis()
-            delay(1000)
-        }
-    }
-
-    val exerciseState = exerciseUpdate?.exerciseStateInfo?.state ?: ExerciseState.ACTIVE
-    val movingTime = remember(exerciseUpdate, currentTime) {
-        val checkpoint = exerciseUpdate?.activeDurationCheckpoint
-        if (checkpoint != null && exerciseState == ExerciseState.ACTIVE) {
-            val delta = currentTime - checkpoint.time.toEpochMilli()
-            checkpoint.activeDuration.toMillis() + delta
-        } else {
-            checkpoint?.activeDuration?.toMillis() ?: 0L
-        }
-    }
 
     Column(
         modifier = Modifier
@@ -651,28 +615,10 @@ fun Screen1Overview(service: ExerciseService) {
 
 @Composable
 fun Screen2SplitInfo(service: ExerciseService) {
-    val exerciseUpdate by service.exerciseState.collectAsState()
+    val movingTime by service.activeDurationMillis.collectAsState()
     val distance by service.totalDistance.collectAsState()
     val splitPace by service.currentSplitPace.collectAsState()
     val currentPace by service.currentPace.collectAsState()
-
-    val currentTime by produceState(initialValue = System.currentTimeMillis()) {
-        while (true) {
-            value = System.currentTimeMillis()
-            delay(1000)
-        }
-    }
-
-    val exerciseState = exerciseUpdate?.exerciseStateInfo?.state ?: ExerciseState.ACTIVE
-    val movingTime = remember(exerciseUpdate, currentTime) {
-        val checkpoint = exerciseUpdate?.activeDurationCheckpoint
-        if (checkpoint != null && exerciseState == ExerciseState.ACTIVE) {
-            val delta = currentTime - checkpoint.time.toEpochMilli()
-            checkpoint.activeDuration.toMillis() + delta
-        } else {
-            checkpoint?.activeDuration?.toMillis() ?: 0L
-        }
-    }
 
     Column(
         modifier = Modifier
@@ -692,15 +638,7 @@ fun Screen2SplitInfo(service: ExerciseService) {
 fun Screen3HealthElevation(service: ExerciseService) {
     val heartRate by service.heartRate.collectAsState()
     val elevationGain by service.elevationGain.collectAsState()
-
-    val currentTime by produceState(initialValue = System.currentTimeMillis()) {
-        while (true) {
-            value = System.currentTimeMillis()
-            delay(1000)
-        }
-    }
-
-    val elapsedTime = if (service.startTimeMillis > 0) currentTime - service.startTimeMillis else 0L
+    val movingTime by service.activeDurationMillis.collectAsState()
 
     Column(
         modifier = Modifier
@@ -711,7 +649,7 @@ fun Screen3HealthElevation(service: ExerciseService) {
     ) {
         MetricDisplay("Heart Rate", if (heartRate > 0) "%.0f BPM".format(heartRate) else "-- BPM")
         MetricDisplay("Elevation Gain", "%.1f m".format(elevationGain))
-        MetricDisplay("Elapsed Time", formatTime(elapsedTime))
+        MetricDisplay("Elapsed Time", formatTime(movingTime))
     }
 }
 
@@ -823,8 +761,20 @@ fun MetricDisplay(label: String, value: String) {
             .padding(vertical = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text(text = label, style = MaterialTheme.typography.labelSmall)
-        Text(text = value, style = MaterialTheme.typography.bodyLarge)
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.titleMedium.copy(
+                fontFeatureSettings = "tnum"
+            ),
+            color = MaterialTheme.colorScheme.onSurface,
+            textAlign = TextAlign.Center
+        )
     }
 }
 
@@ -843,10 +793,11 @@ fun formatTime(millis: Long): String {
     }
 }
 
-fun formatPace(paceMinPerKm: Double): String {
-    if (paceMinPerKm <= 0.0 || paceMinPerKm > 99.0 || paceMinPerKm.isInfinite() || paceMinPerKm.isNaN()) return "--:--"
-    val minutes = paceMinPerKm.toInt()
-    val seconds = ((paceMinPerKm - minutes) * 60).toInt()
+fun formatPace(paceMinPerKm: Double, maxCutoff: Double = 15.0): String {
+    if (paceMinPerKm <= 0.0 || paceMinPerKm > maxCutoff || paceMinPerKm.isInfinite() || paceMinPerKm.isNaN()) return "--:--"
+    val totalSeconds = Math.round(paceMinPerKm * 60.0).toInt()
+    val minutes = totalSeconds / 60
+    val seconds = totalSeconds % 60
     return "%d:%02d".format(minutes, seconds.coerceIn(0, 59))
 }
 
