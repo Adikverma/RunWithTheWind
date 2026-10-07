@@ -1,6 +1,7 @@
 package com.example.runwiththewind.wear
 
 import android.Manifest
+import android.R
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -37,15 +38,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import java.io.File
 import java.util.ArrayDeque
 
 data class LocationSample(
     val timeMillis: Long,
     val latitude: Double,
     val longitude: Double,
-    val accuracyMeters: Float,
-    val speedMps: Double
+    val accuracyMeters: Float
 )
 
 class ExerciseService : Service() {
@@ -149,7 +148,6 @@ class ExerciseService : Service() {
             return
         }
 
-        // Avoid re-preparing if already active, starting, or preparing
         if (_isRecording.value || _serviceStatus.value is ServiceStatus.Starting || _isPreparing.value) return
 
         val config = WarmUpConfig(
@@ -163,7 +161,6 @@ class ExerciseService : Service() {
             _isPreparing.value = true
             try {
                 exerciseClient.prepareExerciseAsync(config).get()
-                // Only set to acquiring if we haven't acquired yet
                 if (_locationAvailability.value.id == LocationAvailability.UNKNOWN.id || 
                     _locationAvailability.value.id == LocationAvailability.NO_GNSS.id) {
                     _locationAvailability.value = LocationAvailability.ACQUIRING
@@ -327,6 +324,7 @@ class ExerciseService : Service() {
         }
         _activeDurationMillis.value = activeMillis
 
+        // Average Pace - calculated and updated strictly once per second (single value per second)
         if (activeMillis > 0 && cumulativeDistanceMeters >= 5.0) {
             val rawAvgPace = (activeMillis / 60000.0) / (cumulativeDistanceMeters / 1000.0)
             _averagePace.value = if (rawAvgPace <= 15.0) rawAvgPace else 0.0
@@ -356,7 +354,7 @@ class ExerciseService : Service() {
                 lastValidActiveMillis
             }
 
-            // --- 1. TOTAL DISTANCE (Monotonically non-decreasing single source of truth) ---
+            // Total Distance
             update.latestMetrics.getData(DataType.DISTANCE_TOTAL)?.let { distTotalPoint ->
                 if (distTotalPoint.total > cumulativeDistanceMeters) {
                     cumulativeDistanceMeters = distTotalPoint.total
@@ -395,7 +393,7 @@ class ExerciseService : Service() {
                 _elevationGain.value = v
             }
 
-            // Speed & Location
+            // Speed & Location (8-second window for Current Pace)
             val speedFromHs = try {
                 update.latestMetrics.getData(DataType.SPEED).lastOrNull()?.value
             } catch (e: Exception) { null }
@@ -408,7 +406,7 @@ class ExerciseService : Service() {
                     (method.invoke(locPoint) as? Float) ?: 5.0f
                 } catch (e: Exception) { 5.0f }
 
-                processLocationUpdate(lat, lng, accuracy, speedFromHs, now)
+                processLocationUpdate(lat, lng, accuracy, now)
             }
 
             if (accumulatedGpsDistance > cumulativeDistanceMeters) {
@@ -417,7 +415,7 @@ class ExerciseService : Service() {
 
             _totalDistance.value = cumulativeDistanceMeters
 
-            // --- 2. 1KM SPLIT TRACKING ---
+            // 1KM Split Tracking
             val splitIdx = (cumulativeDistanceMeters / 1000.0).toInt() + 1
             if (splitIdx > lastSplitIndex) {
                 lastSplitIndex = splitIdx
@@ -429,7 +427,6 @@ class ExerciseService : Service() {
             val currentSplitDistMeters = (cumulativeDistanceMeters - splitStartDistance).coerceAtLeast(0.0)
             _currentSplitDistance.value = currentSplitDistMeters
 
-            // Current Split Pace (min/km)
             val currentSplitActiveMillis = (activeMillis - splitStartMovingMillis).coerceAtLeast(0L)
             if (currentSplitActiveMillis > 0 && currentSplitDistMeters >= 15.0) {
                 val splitPaceVal = (currentSplitActiveMillis / 60000.0) / (currentSplitDistMeters / 1000.0)
@@ -438,15 +435,7 @@ class ExerciseService : Service() {
                 _currentSplitPace.value = _currentPace.value
             }
 
-            // --- 3. AVERAGE PACE (min/km with 15:00 min/km cutoff) ---
-            if (activeMillis > 0 && cumulativeDistanceMeters >= 5.0) {
-                val rawAvgPace = (activeMillis / 60000.0) / (cumulativeDistanceMeters / 1000.0)
-                _averagePace.value = if (rawAvgPace <= 15.0) rawAvgPace else 0.0
-            } else {
-                _averagePace.value = 0.0
-            }
-
-            // --- 4. CURRENT PACE (Unified Single Computation) ---
+            // Current Pace (8-second rolling window)
             if (exerciseState.isPaused) {
                 _currentPace.value = 0.0
                 smoothedSpeedMps = 0.0
@@ -486,7 +475,6 @@ class ExerciseService : Service() {
         latitude: Double,
         longitude: Double,
         accuracy: Float,
-        speedMpsFromHs: Double?,
         timeMillis: Long
     ) {
         if (accuracy > 25.0f) return
@@ -507,10 +495,9 @@ class ExerciseService : Service() {
             }
         }
 
-        val sample = LocationSample(timeMillis, latitude, longitude, accuracy, speedMpsFromHs ?: 0.0)
+        val sample = LocationSample(timeMillis, latitude, longitude, accuracy)
         locationSamples.addLast(sample)
 
-        // 8-second rolling window for location samples
         val cutoff = timeMillis - 8_000L
         while (locationSamples.isNotEmpty() && locationSamples.first.timeMillis < cutoff) {
             locationSamples.removeFirst()
@@ -579,7 +566,7 @@ class ExerciseService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Run with the Wind")
             .setContentText("Recording your run...")
-            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setSmallIcon(R.drawable.ic_media_play)
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_WORKOUT)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
