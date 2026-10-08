@@ -21,7 +21,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -33,7 +35,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -48,9 +50,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -64,6 +64,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.rotary.onRotaryScrollEvent
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -116,14 +117,14 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_BACK && screenState == ScreenState.TRACKING) {
+        if ((keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_STEM_PRIMARY) && screenState == ScreenState.TRACKING) {
             return true
         }
         return super.onKeyDown(keyCode, event)
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_BACK && screenState == ScreenState.TRACKING) {
+        if ((keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_STEM_PRIMARY) && screenState == ScreenState.TRACKING) {
             performTogglePause()
             return true
         }
@@ -260,6 +261,9 @@ class MainActivity : ComponentActivity() {
                         )
                         ScreenState.TRACKING -> WorkoutScreen(
                             service = exerciseService!!,
+                            onTogglePause = {
+                                performTogglePause()
+                            },
                             onFinish = {
                                 performFinish()
                             }
@@ -531,16 +535,20 @@ fun RunPrepareScreen(
 @Composable
 fun WorkoutScreen(
     service: ExerciseService,
+    onTogglePause: () -> Unit,
     onFinish: (RunSummary) -> Unit
 ) {
-    val horizontalPagerState = rememberPagerState(pageCount = { 2 })
+    val verticalPagerState = rememberPagerState(pageCount = { 2 })
 
-    HorizontalPager(
-        state = horizontalPagerState,
+    VerticalPager(
+        state = verticalPagerState,
         modifier = Modifier.fillMaxSize()
-    ) { horizontalPage ->
-        if (horizontalPage == 0) {
-            MetricsSingleScreen(service)
+    ) { verticalPage ->
+        if (verticalPage == 0) {
+            MetricsSingleScreen(
+                service = service,
+                onTogglePause = onTogglePause
+            )
         } else {
             ControlsScreen(
                 service = service,
@@ -556,11 +564,20 @@ fun WorkoutScreen(
 }
 
 @Composable
-fun MetricsSingleScreen(service: ExerciseService) {
+fun MetricsSingleScreen(
+    service: ExerciseService,
+    onTogglePause: () -> Unit
+) {
+    val pageCount = 3
     var pageIndex by remember { mutableIntStateOf(0) }
     var accumulatedRotaryDelta by remember { mutableFloatStateOf(0f) }
+    var dragAccum by remember { mutableFloatStateOf(0f) }
     val focusRequester = remember { FocusRequester() }
     val rotaryThreshold = 30f
+    val swipeThresholdPx = with(LocalDensity.current) { 35.dp.toPx() }
+
+    val exerciseUpdate by service.exerciseState.collectAsState()
+    val isPaused = exerciseUpdate?.exerciseStateInfo?.state?.isPaused == true
 
     Box(
         modifier = Modifier
@@ -568,8 +585,28 @@ fun MetricsSingleScreen(service: ExerciseService) {
             .pointerInput(Unit) {
                 detectTapGestures(
                     onDoubleTap = {
-                        pageIndex = (pageIndex + 1) % 3
+                        onTogglePause()
                     }
+                )
+            }
+            .pointerInput(Unit) {
+                detectHorizontalDragGestures(
+                    onDragStart = { dragAccum = 0f },
+                    onHorizontalDrag = { change, dragAmount ->
+                        change.consume()
+                        dragAccum += dragAmount
+                    },
+                    onDragEnd = {
+                        // dragAccum < 0: finger moved left (next page 1 -> 2 -> 3 -> 1)
+                        // dragAccum > 0: finger moved right (previous page 1 -> 3 -> 2 -> 1)
+                        if (dragAccum <= -swipeThresholdPx) {
+                            pageIndex = (pageIndex + 1) % pageCount
+                        } else if (dragAccum >= swipeThresholdPx) {
+                            pageIndex = (pageIndex - 1 + pageCount) % pageCount
+                        }
+                        dragAccum = 0f
+                    },
+                    onDragCancel = { dragAccum = 0f }
                 )
             }
             .onRotaryScrollEvent { event ->
@@ -595,6 +632,15 @@ fun MetricsSingleScreen(service: ExerciseService) {
             0 -> Screen1Overview(service)
             1 -> Screen2SplitInfo(service)
             2 -> Screen3HealthElevation(service)
+        }
+
+        // Thin red ring around the rim of screen when paused / stopped
+        if (isPaused) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .border(2.5.dp, Color.Red, CircleShape)
+            )
         }
 
         // Minimalist Page Dots Indicator at the Bottom (away from top system time)
@@ -670,7 +716,7 @@ fun Screen2SplitInfo(service: ExerciseService) {
 fun Screen3HealthElevation(service: ExerciseService) {
     val heartRate by service.heartRate.collectAsState()
     val elevationGain by service.elevationGain.collectAsState()
-    val movingTime by service.activeDurationMillis.collectAsState()
+    val elapsedTime by service.elapsedDurationMillis.collectAsState()
 
     Column(
         modifier = Modifier
@@ -681,7 +727,7 @@ fun Screen3HealthElevation(service: ExerciseService) {
     ) {
         MetricDisplay("Heart Rate", if (heartRate > 0) "%.0f BPM".format(heartRate) else "-- BPM")
         MetricDisplay("Elevation Gain", "%.1f m".format(elevationGain))
-        MetricDisplay("Elapsed Time", formatTime(movingTime))
+        MetricDisplay("Elapsed Time", formatTime(elapsedTime))
     }
 }
 

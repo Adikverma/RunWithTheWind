@@ -98,6 +98,9 @@ class ExerciseService : Service() {
     private val _activeDurationMillis = MutableStateFlow(0L)
     val activeDurationMillis = _activeDurationMillis.asStateFlow()
 
+    private val _elapsedDurationMillis = MutableStateFlow(0L)
+    val elapsedDurationMillis = _elapsedDurationMillis.asStateFlow()
+
     private var splitStartMovingMillis = 0L
     private var splitStartDistance = 0.0
     private var lastSplitIndex = 1
@@ -226,6 +229,7 @@ class ExerciseService : Service() {
         accumulatedIntervalDistance = 0.0
         lastValidActiveMillis = 0L
         _activeDurationMillis.value = 0L
+        _elapsedDurationMillis.value = 0L
         locationSamples.clear()
         smoothedSpeedMps = 0.0
         splitStartMovingMillis = 0L
@@ -284,6 +288,7 @@ class ExerciseService : Service() {
         accumulatedIntervalDistance = 0.0
         lastValidActiveMillis = 0L
         _activeDurationMillis.value = 0L
+        _elapsedDurationMillis.value = 0L
         
         stopForeground(STOP_FOREGROUND_REMOVE)
         
@@ -307,10 +312,14 @@ class ExerciseService : Service() {
     }
 
     private fun updateMetricsTicker() {
+        val now = System.currentTimeMillis()
+        if (_isRecording.value && _startTimeMillis > 0L) {
+            _elapsedDurationMillis.value = (now - _startTimeMillis).coerceAtLeast(0L)
+        }
+
         val update = _exerciseState.value ?: return
         val checkpoint = update.activeDurationCheckpoint ?: return
         val state = update.exerciseStateInfo.state
-        val now = System.currentTimeMillis()
 
         val activeMillis = if (state == ExerciseState.ACTIVE) {
             val delta = (now - checkpoint.time.toEpochMilli()).coerceAtLeast(0L)
@@ -341,6 +350,9 @@ class ExerciseService : Service() {
             val checkpoint = update.activeDurationCheckpoint
             val exerciseState = update.exerciseStateInfo.state
             val now = System.currentTimeMillis()
+            if (_startTimeMillis > 0L) {
+                _elapsedDurationMillis.value = (now - _startTimeMillis).coerceAtLeast(0L)
+            }
             val activeMillis = if (checkpoint != null) {
                 val calculated = if (exerciseState == ExerciseState.ACTIVE) {
                     val delta = now - checkpoint.time.toEpochMilli()
