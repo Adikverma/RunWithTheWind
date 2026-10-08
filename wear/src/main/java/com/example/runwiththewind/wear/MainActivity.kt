@@ -10,7 +10,6 @@ import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.os.Bundle
-import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
 import android.view.KeyEvent
@@ -29,6 +28,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -579,8 +579,7 @@ fun MetricsSingleScreen(
     val rotaryThreshold = 30f
     val swipeThresholdPx = with(LocalDensity.current) { 35.dp.toPx() }
 
-    val exerciseUpdate by service.exerciseState.collectAsState()
-    val isPaused = exerciseUpdate?.exerciseStateInfo?.state?.isPaused == true
+    val uiState by service.uiState.collectAsStateWithLifecycle()
 
     Box(
         modifier = Modifier
@@ -600,8 +599,6 @@ fun MetricsSingleScreen(
                         dragAccum += dragAmount
                     },
                     onDragEnd = {
-                        // dragAccum < 0: finger moved left (next page 1 -> 2 -> 3 -> 1)
-                        // dragAccum > 0: finger moved right (previous page 1 -> 3 -> 2 -> 1)
                         if (dragAccum <= -swipeThresholdPx) {
                             pageIndex = (pageIndex + 1) % pageCount
                         } else if (dragAccum >= swipeThresholdPx) {
@@ -615,11 +612,11 @@ fun MetricsSingleScreen(
             .onRotaryScrollEvent { event ->
                 accumulatedRotaryDelta += event.verticalScrollPixels
                 if (accumulatedRotaryDelta >= rotaryThreshold) {
-                    pageIndex = (pageIndex + 1) % 3
+                    pageIndex = (pageIndex + 1) % pageCount
                     accumulatedRotaryDelta = 0f
                     true
                 } else if (accumulatedRotaryDelta <= -rotaryThreshold) {
-                    pageIndex = (pageIndex - 1 + 3) % 3
+                    pageIndex = (pageIndex - 1 + pageCount) % pageCount
                     accumulatedRotaryDelta = 0f
                     true
                 } else {
@@ -630,15 +627,13 @@ fun MetricsSingleScreen(
             .focusable(),
         contentAlignment = Alignment.Center
     ) {
-        // Instant screen swap with zero transition delay
         when (pageIndex) {
-            0 -> Screen1Overview(service)
-            1 -> Screen2SplitInfo(service)
-            2 -> Screen3HealthElevation(service)
+            0 -> Screen1Overview(uiState)
+            1 -> Screen2SplitInfo(uiState)
+            2 -> Screen3HealthElevation(uiState)
         }
 
-        // Thin red ring around the rim of screen when paused / stopped
-        if (isPaused) {
+        if (uiState.isPaused) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -646,7 +641,6 @@ fun MetricsSingleScreen(
             )
         }
 
-        // Minimalist Page Dots Indicator at the Bottom (away from top system time)
         Row(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -654,7 +648,7 @@ fun MetricsSingleScreen(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            repeat(3) { index ->
+            repeat(pageCount) { index ->
                 Box(
                     modifier = Modifier
                         .size(if (index == pageIndex) 6.dp else 4.dp)
@@ -676,31 +670,32 @@ fun MetricsSingleScreen(
 }
 
 @Composable
-fun Screen1Overview(service: ExerciseService) {
-    val movingTime by service.activeDurationMillis.collectAsState()
-    val distance by service.totalDistance.collectAsState()
-    val avgPace by service.averagePace.collectAsState()
-
+fun HeroMetricDisplay(label: String, value: String) {
     Column(
         modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        MetricDisplay("Moving Time", formatTime(movingTime))
-        MetricDisplay("Avg Pace [min/km]", formatPace(avgPace))
-        MetricDisplay("Distance [km]", formatDistance(distance))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.displaySmall.copy(
+                fontFeatureSettings = "tnum"
+            ),
+            color = MaterialTheme.colorScheme.primary,
+            textAlign = TextAlign.Center
+        )
     }
 }
 
 @Composable
-fun Screen2SplitInfo(service: ExerciseService) {
-    val movingTime by service.activeDurationMillis.collectAsState()
-    val distance by service.totalDistance.collectAsState()
-    val splitPace by service.currentSplitPace.collectAsState()
-    val currentPace by service.currentPace.collectAsState()
-
+fun Screen1Overview(uiState: WorkoutUiState) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -708,19 +703,14 @@ fun Screen2SplitInfo(service: ExerciseService) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        MetricDisplay("Distance [km]", formatDistance(distance))
-        MetricDisplay("Split Pace [min/km]", formatPace(splitPace))
-        MetricDisplay("Pace [min/km]", formatPace(currentPace))
-        MetricDisplay("Moving Time", formatTime(movingTime))
+        HeroMetricDisplay("Distance [km]", formatDistance(uiState.distanceMeters))
+        MetricDisplay("Moving Time", formatTime(uiState.activeMillis))
+        MetricDisplay("Avg Pace [min/km]", formatPace(uiState.avgPace))
     }
 }
 
 @Composable
-fun Screen3HealthElevation(service: ExerciseService) {
-    val heartRate by service.heartRate.collectAsState()
-    val elevationGain by service.elevationGain.collectAsState()
-    val elapsedTime by service.elapsedDurationMillis.collectAsState()
-
+fun Screen2SplitInfo(uiState: WorkoutUiState) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -728,9 +718,28 @@ fun Screen3HealthElevation(service: ExerciseService) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        MetricDisplay("Heart Rate", if (heartRate > 0) "%.0f BPM".format(heartRate) else "-- BPM")
-        MetricDisplay("Elevation Gain", "%.1f m".format(elevationGain))
-        MetricDisplay("Elapsed Time", formatTime(elapsedTime))
+        HeroMetricDisplay("Distance [km]", formatDistance(uiState.distanceMeters))
+        MetricDisplay("Split Pace [min/km]", formatPace(uiState.splitPace))
+        MetricDisplay("Pace [min/km]", formatPace(uiState.currentPace))
+        MetricDisplay("Moving Time", formatTime(uiState.activeMillis))
+    }
+}
+
+@Composable
+fun Screen3HealthElevation(uiState: WorkoutUiState) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        HeroMetricDisplay(
+            "Heart Rate",
+            if (uiState.heartRate > 0) "%.0f BPM".format(uiState.heartRate) else "-- BPM"
+        )
+        MetricDisplay("Elevation Gain", "%.1f m".format(uiState.elevationGain))
+        MetricDisplay("Elapsed Time", formatTime(uiState.elapsedMillis))
     }
 }
 

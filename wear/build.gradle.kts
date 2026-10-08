@@ -44,10 +44,13 @@ dependencies {
     implementation(libs.androidx.health.services)
     implementation(libs.guava)
     implementation(libs.androidx.concurrent.futures.ktx)
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-guava:1.8.1")
     implementation(libs.androidx.wear.compose.material3)
     implementation(libs.androidx.wear.compose.foundation)
     implementation(libs.androidx.wear.compose.navigation3)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
+    implementation("androidx.wear:wear-ongoing:1.1.0")
     implementation(libs.androidx.activity.compose)
     
     implementation("androidx.compose.ui:ui:1.7.0")

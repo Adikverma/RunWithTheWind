@@ -28,6 +28,8 @@ import androidx.health.services.client.data.ExerciseType
 import androidx.health.services.client.data.ExerciseUpdate
 import androidx.health.services.client.data.LocationAvailability
 import androidx.health.services.client.data.WarmUpConfig
+import androidx.wear.ongoing.OngoingActivity
+import androidx.wear.ongoing.Status
 import com.google.android.gms.wearable.Asset
 import com.google.android.gms.wearable.PutDataMapRequest
 import com.google.android.gms.wearable.Wearable
@@ -71,6 +73,9 @@ class ExerciseService : Service() {
 
     private val _isPaused = MutableStateFlow(false)
     val isPaused = _isPaused.asStateFlow()
+
+    private val _uiState = MutableStateFlow(WorkoutUiState())
+    val uiState = _uiState.asStateFlow()
 
     private val _serviceStatus = MutableStateFlow<ServiceStatus>(ServiceStatus.Idle)
     val serviceStatus = _serviceStatus.asStateFlow()
@@ -154,6 +159,21 @@ class ExerciseService : Service() {
         stopExercise()
     }
 
+    private fun updateUiState() {
+        _uiState.value = WorkoutUiState(
+            isRecording = _isRecording.value,
+            isPaused = _isPaused.value,
+            activeMillis = _activeDurationMillis.value,
+            elapsedMillis = _elapsedDurationMillis.value,
+            distanceMeters = cumulativeDistanceMeters,
+            currentPace = _currentPace.value,
+            avgPace = _averagePace.value,
+            splitPace = _currentSplitPace.value,
+            heartRate = _heartRate.value,
+            elevationGain = _elevationGain.value
+        )
+    }
+
     fun prepareExercise() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
             != PackageManager.PERMISSION_GRANTED) {
@@ -221,15 +241,46 @@ class ExerciseService : Service() {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
         }
 
+        val notification = createNotification()
         try {
             startForeground(
                 NOTIFICATION_ID,
-                createNotification(),
+                notification,
                 foregroundServiceType
             )
         } catch (e: Exception) {
             _serviceStatus.value = ServiceStatus.Error("Failed to start foreground service: ${e.message}")
             return
+        }
+
+        // Setup Ongoing Activity
+        try {
+            val intent = Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+            }
+            val pendingIntent = PendingIntent.getActivity(
+                this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("Run with the Wind")
+                .setContentText("Running session active")
+                .setSmallIcon(R.drawable.run_with_wind)
+                .setContentIntent(pendingIntent)
+                .setOngoing(true)
+                .setCategory(NotificationCompat.CATEGORY_WORKOUT)
+
+            val ongoingActivity = OngoingActivity.Builder(
+                this,
+                NOTIFICATION_ID,
+                builder
+            )
+            .setTouchIntent(pendingIntent)
+            .setStatus(Status.Builder().addTemplate("Running").build())
+            .build()
+
+            ongoingActivity.apply(this@ExerciseService)
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
 
         _isRecording.value = true
@@ -249,6 +300,8 @@ class ExerciseService : Service() {
         _currentSplitPace.value = 0.0
         _currentPace.value = 0.0
         _averagePace.value = 0.0
+
+        updateUiState()
 
         exerciseClient.setUpdateCallback(exerciseUpdateCallback)
         startTicker()
@@ -272,6 +325,7 @@ class ExerciseService : Service() {
                 exerciseClient.pauseExerciseAsync().await()
                 _isPaused.value = true
                 _currentPace.value = 0.0
+                updateUiState()
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -284,6 +338,7 @@ class ExerciseService : Service() {
             try {
                 exerciseClient.resumeExerciseAsync().await()
                 _isPaused.value = false
+                updateUiState()
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -314,6 +369,7 @@ class ExerciseService : Service() {
         lastValidActiveMillis = 0L
         _activeDurationMillis.value = 0L
         _elapsedDurationMillis.value = 0L
+        updateUiState()
 
         stopForeground(STOP_FOREGROUND_REMOVE)
 
@@ -342,8 +398,14 @@ class ExerciseService : Service() {
             _elapsedDurationMillis.value = (now - _startTimeMillis).coerceAtLeast(0L)
         }
 
-        val update = _exerciseState.value ?: return
-        val checkpoint = update.activeDurationCheckpoint ?: return
+        val update = _exerciseState.value ?: run {
+            updateUiState()
+            return
+        }
+        val checkpoint = update.activeDurationCheckpoint ?: run {
+            updateUiState()
+            return
+        }
         val state = update.exerciseStateInfo.state
 
         val activeMillis = if (state == ExerciseState.ACTIVE) {
@@ -365,6 +427,8 @@ class ExerciseService : Service() {
         } else {
             _averagePace.value = 0.0
         }
+
+        updateUiState()
     }
 
     private val exerciseUpdateCallback = object : ExerciseUpdateCallback {
@@ -449,6 +513,8 @@ class ExerciseService : Service() {
             } else {
                 _currentSplitPace.value = _currentPace.value
             }
+
+            updateUiState()
         }
 
         override fun onLapSummaryReceived(lapSummary: ExerciseLapSummary) {}
