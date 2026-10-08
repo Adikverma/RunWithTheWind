@@ -10,6 +10,7 @@ import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.os.Bundle
+import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
 import android.view.KeyEvent
@@ -302,7 +303,8 @@ class MainActivity : ComponentActivity() {
         return arrayOf(
             Manifest.permission.BODY_SENSORS,
             Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACTIVITY_RECOGNITION
+            Manifest.permission.ACTIVITY_RECOGNITION,
+            Manifest.permission.POST_NOTIFICATIONS
         ).all {
             ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
         }
@@ -503,7 +505,8 @@ fun RunPrepareScreen(
                                 arrayOf(
                                     Manifest.permission.BODY_SENSORS,
                                     Manifest.permission.ACCESS_FINE_LOCATION,
-                                    Manifest.permission.ACTIVITY_RECOGNITION
+                                    Manifest.permission.ACTIVITY_RECOGNITION,
+                                    Manifest.permission.POST_NOTIFICATIONS
                                 )
                             )
                         } else if (!gpsEnabled) {

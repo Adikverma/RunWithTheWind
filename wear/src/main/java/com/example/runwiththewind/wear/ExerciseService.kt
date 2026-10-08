@@ -1,32 +1,33 @@
 package com.example.runwiththewind.wear
 
 import android.Manifest
-//noinspection SuspiciousImport
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
-import android.location.Location
 import android.location.LocationManager
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import androidx.compose.runtime.Immutable
+import androidx.concurrent.futures.await
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.health.services.client.ExerciseUpdateCallback
 import androidx.health.services.client.HealthServices
+import androidx.health.services.client.data.Availability
 import androidx.health.services.client.data.DataType
 import androidx.health.services.client.data.ExerciseConfig
+import androidx.health.services.client.data.ExerciseLapSummary
 import androidx.health.services.client.data.ExerciseState
 import androidx.health.services.client.data.ExerciseType
 import androidx.health.services.client.data.ExerciseUpdate
-import androidx.health.services.client.ExerciseUpdateCallback
-import androidx.health.services.client.data.Availability
 import androidx.health.services.client.data.LocationAvailability
 import androidx.health.services.client.data.WarmUpConfig
-import androidx.health.services.client.data.ExerciseLapSummary
 import com.google.android.gms.wearable.Asset
 import com.google.android.gms.wearable.PutDataMapRequest
 import com.google.android.gms.wearable.Wearable
@@ -34,17 +35,24 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import java.util.ArrayDeque
 
-data class LocationSample(
-    val timeMillis: Long,
-    val latitude: Double,
-    val longitude: Double,
-    val accuracyMeters: Float
+@Immutable
+data class WorkoutUiState(
+    val isRecording: Boolean = false,
+    val isPaused: Boolean = false,
+    val activeMillis: Long = 0L,
+    val elapsedMillis: Long = 0L,
+    val distanceMeters: Double = 0.0,
+    val currentPace: Double = 0.0,
+    val avgPace: Double = 0.0,
+    val splitPace: Double = 0.0,
+    val heartRate: Double = 0.0,
+    val elevationGain: Double = 0.0
 )
 
 class ExerciseService : Service() {
@@ -60,6 +68,9 @@ class ExerciseService : Service() {
 
     private val _isRecording = MutableStateFlow(false)
     val isRecording = _isRecording.asStateFlow()
+
+    private val _isPaused = MutableStateFlow(false)
+    val isPaused = _isPaused.asStateFlow()
 
     private val _serviceStatus = MutableStateFlow<ServiceStatus>(ServiceStatus.Idle)
     val serviceStatus = _serviceStatus.asStateFlow()
@@ -106,16 +117,8 @@ class ExerciseService : Service() {
     private var lastSplitIndex = 1
 
     private var cumulativeDistanceMeters = 0.0
-    private var accumulatedGpsDistance = 0.0
-    private var accumulatedIntervalDistance = 0.0
     private var lastValidActiveMillis = 0L
-
-    private val locationSamples = ArrayDeque<LocationSample>()
-    private var smoothedSpeedMps: Double = 0.0
     private var tickerJob: Job? = null
-
-    private val _workoutHistory = mutableListOf<ExerciseUpdate>()
-    val workoutHistory: List<ExerciseUpdate> get() = _workoutHistory
 
     private var _startTimeMillis = 0L
     val startTimeMillis: Long get() = _startTimeMillis
@@ -133,6 +136,17 @@ class ExerciseService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         return START_STICKY
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        stopTicker()
+        try {
+            exerciseClient.clearUpdateCallbackAsync(exerciseUpdateCallback)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        serviceScope.cancel()
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
@@ -159,12 +173,12 @@ class ExerciseService : Service() {
         )
 
         exerciseClient.setUpdateCallback(exerciseUpdateCallback)
-        
+
         prepareJob = serviceScope.launch {
             _isPreparing.value = true
             try {
-                exerciseClient.prepareExerciseAsync(config).get()
-                if (_locationAvailability.value.id == LocationAvailability.UNKNOWN.id || 
+                exerciseClient.prepareExerciseAsync(config).await()
+                if (_locationAvailability.value.id == LocationAvailability.UNKNOWN.id ||
                     _locationAvailability.value.id == LocationAvailability.NO_GNSS.id) {
                     _locationAvailability.value = LocationAvailability.ACQUIRING
                 }
@@ -194,10 +208,8 @@ class ExerciseService : Service() {
             .setDataTypes(setOf(
                 DataType.HEART_RATE_BPM,
                 DataType.LOCATION,
-                DataType.PACE,
                 DataType.SPEED,
-                DataType.ELEVATION_GAIN,
-                DataType.DISTANCE,
+                DataType.ELEVATION_GAIN_TOTAL,
                 DataType.DISTANCE_TOTAL
             ))
             .setIsGpsEnabled(true)
@@ -211,7 +223,7 @@ class ExerciseService : Service() {
 
         try {
             startForeground(
-                NOTIFICATION_ID, 
+                NOTIFICATION_ID,
                 createNotification(),
                 foregroundServiceType
             )
@@ -221,17 +233,14 @@ class ExerciseService : Service() {
         }
 
         _isRecording.value = true
+        _isPaused.value = false
         _totalDistance.value = 0.0
         _startTimeMillis = System.currentTimeMillis()
         _serviceStatus.value = ServiceStatus.Starting
         cumulativeDistanceMeters = 0.0
-        accumulatedGpsDistance = 0.0
-        accumulatedIntervalDistance = 0.0
         lastValidActiveMillis = 0L
         _activeDurationMillis.value = 0L
         _elapsedDurationMillis.value = 0L
-        locationSamples.clear()
-        smoothedSpeedMps = 0.0
         splitStartMovingMillis = 0L
         splitStartDistance = 0.0
         lastSplitIndex = 1
@@ -243,11 +252,11 @@ class ExerciseService : Service() {
 
         exerciseClient.setUpdateCallback(exerciseUpdateCallback)
         startTicker()
-        
+
         serviceScope.launch {
             try {
                 prepareJob?.join()
-                exerciseClient.startExerciseAsync(config).get()
+                exerciseClient.startExerciseAsync(config).await()
                 _serviceStatus.value = ServiceStatus.Active
             } catch (e: Exception) {
                 _serviceStatus.value = ServiceStatus.Error("Exercise failed to start: ${e.message}")
@@ -258,25 +267,43 @@ class ExerciseService : Service() {
 
     fun pauseExercise() {
         if (!_isRecording.value) return
-        exerciseClient.pauseExerciseAsync()
+        serviceScope.launch {
+            try {
+                exerciseClient.pauseExerciseAsync().await()
+                _isPaused.value = true
+                _currentPace.value = 0.0
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
     }
 
     fun resumeExercise() {
         if (!_isRecording.value) return
-        exerciseClient.resumeExerciseAsync()
+        serviceScope.launch {
+            try {
+                exerciseClient.resumeExerciseAsync().await()
+                _isPaused.value = false
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
     }
 
     fun stopExercise(keepError: Boolean = false) {
         if (!_isRecording.value && _serviceStatus.value == ServiceStatus.Idle) return
 
-        try {
-            exerciseClient.endExerciseAsync()
-        } catch (e: Exception) {
-            e.printStackTrace()
+        serviceScope.launch {
+            try {
+                exerciseClient.endExerciseAsync().await()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
 
         stopTicker()
         _isRecording.value = false
+        _isPaused.value = false
         if (!keepError) {
             _serviceStatus.value = ServiceStatus.Idle
         }
@@ -284,14 +311,12 @@ class ExerciseService : Service() {
         _exerciseState.value = null
         _startTimeMillis = 0L
         cumulativeDistanceMeters = 0.0
-        accumulatedGpsDistance = 0.0
-        accumulatedIntervalDistance = 0.0
         lastValidActiveMillis = 0L
         _activeDurationMillis.value = 0L
         _elapsedDurationMillis.value = 0L
-        
+
         stopForeground(STOP_FOREGROUND_REMOVE)
-        
+
         handoffDataToPhone()
         stopSelf()
     }
@@ -333,7 +358,7 @@ class ExerciseService : Service() {
         }
         _activeDurationMillis.value = activeMillis
 
-        // Average Pace - calculated and updated strictly once per second (single value per second)
+        // Average Pace - calculated strictly once per second
         if (activeMillis > 0 && cumulativeDistanceMeters >= 5.0) {
             val rawAvgPace = (activeMillis / 60000.0) / (cumulativeDistanceMeters / 1000.0)
             _averagePace.value = if (rawAvgPace <= 15.0) rawAvgPace else 0.0
@@ -345,10 +370,11 @@ class ExerciseService : Service() {
     private val exerciseUpdateCallback = object : ExerciseUpdateCallback {
         override fun onExerciseUpdateReceived(update: ExerciseUpdate) {
             _exerciseState.value = update
-            _workoutHistory.add(update)
 
             val checkpoint = update.activeDurationCheckpoint
             val exerciseState = update.exerciseStateInfo.state
+            _isPaused.value = exerciseState.isPaused
+
             val now = System.currentTimeMillis()
             if (_startTimeMillis > 0L) {
                 _elapsedDurationMillis.value = (now - _startTimeMillis).coerceAtLeast(0L)
@@ -366,66 +392,43 @@ class ExerciseService : Service() {
                 lastValidActiveMillis
             }
 
-            // Total Distance
+            // Total Distance (Health Services fused DISTANCE_TOTAL)
             update.latestMetrics.getData(DataType.DISTANCE_TOTAL)?.let { distTotalPoint ->
                 if (distTotalPoint.total > cumulativeDistanceMeters) {
                     cumulativeDistanceMeters = distTotalPoint.total
                 }
-            }
-
-            val distPoints = update.latestMetrics.getData(DataType.DISTANCE)
-            if (distPoints.isNotEmpty()) {
-                val sumIntervals = distPoints.sumOf { it.value }
-                if (sumIntervals > 0.0) {
-                    accumulatedIntervalDistance += sumIntervals
-                    if (accumulatedIntervalDistance > cumulativeDistanceMeters) {
-                        cumulativeDistanceMeters = accumulatedIntervalDistance
+            } ?: run {
+                val distPoints = update.latestMetrics.getData(DataType.DISTANCE)
+                if (distPoints.isNotEmpty()) {
+                    val sumIntervals = distPoints.sumOf { it.value }
+                    if (sumIntervals > 0.0) {
+                        cumulativeDistanceMeters += sumIntervals
                     }
                 }
             }
+
+            _totalDistance.value = cumulativeDistanceMeters
 
             // Heart Rate
             update.latestMetrics.getData(DataType.HEART_RATE_BPM).lastOrNull()?.value?.let { hrVal ->
                 _heartRate.value = hrVal
             }
 
-            // Elevation Gain
-            update.latestMetrics.getData(DataType.ELEVATION_GAIN).lastOrNull()?.let { elevPoint ->
-                val v = try {
-                    val method = elevPoint.javaClass.getMethod("getValue")
-                    method.invoke(elevPoint) as? Double
-                } catch (e: Exception) {
-                    try {
-                        val method = elevPoint.javaClass.getMethod("getTotal")
-                        method.invoke(elevPoint) as? Double
-                    } catch (e2: Exception) {
-                        null
-                    }
-                } ?: 0.0
-                _elevationGain.value = v
+            // Elevation Gain Total
+            update.latestMetrics.getData(DataType.ELEVATION_GAIN_TOTAL)?.let { elevPoint ->
+                _elevationGain.value = elevPoint.total
             }
 
-            // Speed & Location (8-second window for Current Pace)
-            val speedFromHs = try {
-                update.latestMetrics.getData(DataType.SPEED).lastOrNull()?.value
-            } catch (e: Exception) { null }
-
-            update.latestMetrics.getData(DataType.LOCATION).lastOrNull()?.let { locPoint ->
-                val lat = locPoint.value.latitude
-                val lng = locPoint.value.longitude
-                val accuracy = try {
-                    val method = locPoint.javaClass.getMethod("getHorizontalAccuracy")
-                    (method.invoke(locPoint) as? Float) ?: 5.0f
-                } catch (e: Exception) { 5.0f }
-
-                processLocationUpdate(lat, lng, accuracy, now)
+            // Speed & Current Pace
+            val speedFromHs = update.latestMetrics.getData(DataType.SPEED).lastOrNull()?.value
+            if (exerciseState.isPaused) {
+                _currentPace.value = 0.0
+            } else if (speedFromHs != null && speedFromHs in 1.111..8.333) {
+                val paceVal = (1000.0 / speedFromHs) / 60.0
+                _currentPace.value = if (paceVal <= 15.0) paceVal else 0.0
+            } else if (speedFromHs != null && speedFromHs < 1.111) {
+                _currentPace.value = 0.0
             }
-
-            if (accumulatedGpsDistance > cumulativeDistanceMeters) {
-                cumulativeDistanceMeters = accumulatedGpsDistance
-            }
-
-            _totalDistance.value = cumulativeDistanceMeters
 
             // 1KM Split Tracking
             val splitIdx = (cumulativeDistanceMeters / 1000.0).toInt() + 1
@@ -446,28 +449,6 @@ class ExerciseService : Service() {
             } else {
                 _currentSplitPace.value = _currentPace.value
             }
-
-            // Current Pace (8-second rolling window)
-            if (exerciseState.isPaused) {
-                _currentPace.value = 0.0
-                smoothedSpeedMps = 0.0
-            } else {
-                val windowSpeed = calculateWindowSpeed(locationSamples)
-                val activeSpeed = when {
-                    speedFromHs != null && speedFromHs in 1.111..8.333 -> speedFromHs
-                    windowSpeed in 1.111..8.333 -> windowSpeed
-                    else -> 0.0
-                }
-
-                if (activeSpeed < 1.111) {
-                    smoothedSpeedMps = 0.0
-                    _currentPace.value = 0.0
-                } else {
-                    smoothedSpeedMps = if (smoothedSpeedMps < 1.111) activeSpeed else (0.75 * smoothedSpeedMps + 0.25 * activeSpeed)
-                    val paceVal = (1000.0 / smoothedSpeedMps) / 60.0
-                    _currentPace.value = if (paceVal <= 15.0) paceVal else 0.0
-                }
-            }
         }
 
         override fun onLapSummaryReceived(lapSummary: ExerciseLapSummary) {}
@@ -481,64 +462,6 @@ class ExerciseService : Service() {
                 _locationAvailability.value = availability
             }
         }
-    }
-
-    private fun processLocationUpdate(
-        latitude: Double,
-        longitude: Double,
-        accuracy: Float,
-        timeMillis: Long
-    ) {
-        if (accuracy > 25.0f) return
-
-        val lastSample = locationSamples.peekLast()
-        if (lastSample != null) {
-            val dtSec = (timeMillis - lastSample.timeMillis) / 1000.0
-            if (dtSec in 0.2..30.0) {
-                val distMeters = calculateDistanceBetween(
-                    lastSample.latitude, lastSample.longitude,
-                    latitude, longitude
-                )
-                val impliedSpeed = distMeters / dtSec
-
-                if (impliedSpeed in 0.15..15.0) {
-                    accumulatedGpsDistance += distMeters
-                }
-            }
-        }
-
-        val sample = LocationSample(timeMillis, latitude, longitude, accuracy)
-        locationSamples.addLast(sample)
-
-        val cutoff = timeMillis - 8_000L
-        while (locationSamples.isNotEmpty() && locationSamples.first.timeMillis < cutoff) {
-            locationSamples.removeFirst()
-        }
-    }
-
-    private fun calculateWindowSpeed(samples: ArrayDeque<LocationSample>): Double {
-        if (samples.size < 2) return 0.0
-        val first = samples.first
-        val last = samples.last
-        val dtSec = (last.timeMillis - first.timeMillis) / 1000.0
-        if (dtSec < 1.5) return 0.0
-
-        var windowDistance = 0.0
-        var prev = first
-        for (curr in samples) {
-            if (curr != first) {
-                windowDistance += calculateDistanceBetween(prev.latitude, prev.longitude, curr.latitude, curr.longitude)
-                prev = curr
-            }
-        }
-
-        return windowDistance / dtSec
-    }
-
-    private fun calculateDistanceBetween(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
-        val results = FloatArray(1)
-        Location.distanceBetween(lat1, lon1, lat2, lon2, results)
-        return results[0].toDouble()
     }
 
     private fun isGpsEnabled(): Boolean {
@@ -568,17 +491,28 @@ class ExerciseService : Service() {
         val channel = NotificationChannel(
             CHANNEL_ID,
             "Running Exercise Session",
-            NotificationManager.IMPORTANCE_DEFAULT
+            NotificationManager.IMPORTANCE_LOW
         )
         val manager = getSystemService(NotificationManager::class.java)
         manager?.createNotificationChannel(channel)
     }
 
     private fun createNotification(): Notification {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Run with the Wind")
             .setContentText("Recording your run...")
             .setSmallIcon(R.drawable.run_with_wind)
+            .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_WORKOUT)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
