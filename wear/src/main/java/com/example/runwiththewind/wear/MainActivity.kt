@@ -19,6 +19,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -47,6 +48,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -83,11 +85,17 @@ import androidx.wear.compose.material3.SurfaceTransformation
 import androidx.wear.compose.material3.Text
 import androidx.wear.compose.material3.lazy.rememberTransformationSpec
 import androidx.wear.compose.material3.lazy.transformedHeight
+import com.example.runwiththewind.wear.ui.history.DeleteConfirmationDialog
+import com.example.runwiththewind.wear.ui.history.HistoryItemUi
+import com.example.runwiththewind.wear.ui.history.HistoryRow
+import com.example.runwiththewind.wear.ui.history.HistoryViewModel
+import com.example.runwiththewind.wear.ui.theme.RunWithTheWindTheme
 import kotlinx.coroutines.delay
 import java.util.concurrent.TimeUnit
 
 class MainActivity : ComponentActivity() {
 
+    private val historyViewModel: HistoryViewModel by viewModels()
     private var exerciseService: ExerciseService? = null
     private var isBound by mutableStateOf(false)
 
@@ -157,129 +165,147 @@ class MainActivity : ComponentActivity() {
         bindService(intent, connection, BIND_AUTO_CREATE)
 
         setContent {
-            val context = LocalContext.current
-            var permissionsGranted by remember {
-                mutableStateOf(checkAllPermissions(context))
-            }
-            var gpsEnabled by remember {
-                mutableStateOf(isGpsEnabled(context))
-            }
+            RunWithTheWindTheme {
+                val context = LocalContext.current
+                var expandedId by rememberSaveable { mutableStateOf<String?>(null) }
 
-            val lifecycleOwner = LocalLifecycleOwner.current
-            DisposableEffect(lifecycleOwner) {
-                val observer = LifecycleEventObserver { _, event ->
-                    if (event == Lifecycle.Event.ON_RESUME) {
-                        permissionsGranted = checkAllPermissions(context)
-                        gpsEnabled = isGpsEnabled(context)
-                    }
+                var permissionsGranted by remember {
+                    mutableStateOf(checkAllPermissions(context))
                 }
-                lifecycleOwner.lifecycle.addObserver(observer)
-                onDispose {
-                    lifecycleOwner.lifecycle.removeObserver(observer)
+                var gpsEnabled by remember {
+                    mutableStateOf(isGpsEnabled(context))
                 }
-            }
 
-            DisposableEffect(context) {
-                val receiver = object : BroadcastReceiver() {
-                    override fun onReceive(context: Context?, intent: Intent?) {
-                        if (intent?.action == LocationManager.PROVIDERS_CHANGED_ACTION) {
-                            permissionsGranted = checkAllPermissions(context ?: return)
+                val lifecycleOwner = LocalLifecycleOwner.current
+                DisposableEffect(lifecycleOwner) {
+                    val observer = LifecycleEventObserver { _, event ->
+                        if (event == Lifecycle.Event.ON_RESUME) {
+                            permissionsGranted = checkAllPermissions(context)
                             gpsEnabled = isGpsEnabled(context)
                         }
                     }
-                }
-                val filter = IntentFilter(LocationManager.PROVIDERS_CHANGED_ACTION)
-                ContextCompat.registerReceiver(
-                    context,
-                    receiver,
-                    filter,
-                    ContextCompat.RECEIVER_NOT_EXPORTED
-                )
-                onDispose {
-                    try {
-                        context.unregisterReceiver(receiver)
-                    } catch (e: Exception) {
-                        // ignore unregister receiver exception
+                    lifecycleOwner.lifecycle.addObserver(observer)
+                    onDispose {
+                        lifecycleOwner.lifecycle.removeObserver(observer)
                     }
                 }
-            }
 
-            LaunchedEffect(screenState) {
-                while (screenState == ScreenState.RUN_PREPARE) {
-                    val newGps = isGpsEnabled(context)
-                    val newPerms = checkAllPermissions(context)
-                    if (newGps != gpsEnabled) gpsEnabled = newGps
-                    if (newPerms != permissionsGranted) permissionsGranted = newPerms
-                    delay(1000)
-                }
-            }
-
-            AppScaffold {
-                if (isBound && exerciseService != null) {
-                    val service = exerciseService!!
-                    val serviceStatus by service.serviceStatus.collectAsStateWithLifecycle()
-                    val locationAvailability by service.locationAvailability.collectAsStateWithLifecycle()
-
-                    BackHandler(enabled = screenState != ScreenState.ACTIVITIES) {
-                        when (screenState) {
-                            ScreenState.RUN_PREPARE -> screenState = ScreenState.ACTIVITIES
-                            ScreenState.SUMMARY -> screenState = ScreenState.ACTIVITIES
-                            ScreenState.TRACKING -> {
-                                // Stay on tracking screen
-                            }
-                            else -> {}
-                        }
-                    }
-
-                    when (screenState) {
-                        ScreenState.ACTIVITIES -> ActivitiesScreen {
-                            screenState = ScreenState.RUN_PREPARE
-                        }
-                        ScreenState.RUN_PREPARE -> RunPrepareScreen(
-                            permissionsGranted = permissionsGranted,
-                            gpsEnabled = gpsEnabled,
-                            locationAvailability = locationAvailability,
-                            serviceStatus = serviceStatus,
-                            onStart = {
-                                service.startExercise()
-                            },
-                            onRefreshStatus = {
-                                permissionsGranted = checkAllPermissions(context)
+                DisposableEffect(context) {
+                    val receiver = object : BroadcastReceiver() {
+                        override fun onReceive(context: Context?, intent: Intent?) {
+                            if (intent?.action == LocationManager.PROVIDERS_CHANGED_ACTION) {
+                                permissionsGranted = checkAllPermissions(context ?: return)
                                 gpsEnabled = isGpsEnabled(context)
                             }
-                        )
-                        ScreenState.TRACKING -> WorkoutScreen(
-                            service = service,
-                            onTogglePause = {
-                                performTogglePause()
-                            },
-                            onFinish = {
-                                performFinish()
-                            }
-                        )
-                        ScreenState.SUMMARY -> SummaryScreen(
-                            summary = summaryData!!,
-                            onRecord = {
-                                screenState = ScreenState.ACTIVITIES
-                            }
-                        )
-                    }
-
-                    LaunchedEffect(serviceStatus) {
-                        if (serviceStatus is ServiceStatus.Active && screenState == ScreenState.RUN_PREPARE) {
-                            screenState = ScreenState.TRACKING
                         }
                     }
-
-                    LaunchedEffect(isBound, permissionsGranted, gpsEnabled, screenState) {
-                        if (screenState == ScreenState.RUN_PREPARE && isBound && permissionsGranted && gpsEnabled) {
-                            if (service.serviceStatus.value is ServiceStatus.Idle) {
-                                service.prepareExercise()
-                            }
+                    val filter = IntentFilter(LocationManager.PROVIDERS_CHANGED_ACTION)
+                    ContextCompat.registerReceiver(
+                        context,
+                        receiver,
+                        filter,
+                        ContextCompat.RECEIVER_NOT_EXPORTED
+                    )
+                    onDispose {
+                        try {
+                            context.unregisterReceiver(receiver)
+                        } catch (e: Exception) {
+                            // ignore unregister receiver exception
                         }
                     }
-                } else {
-                    LoadingScreen()
+                }
+
+                LaunchedEffect(screenState) {
+                    while (screenState == ScreenState.RUN_PREPARE) {
+                        val newGps = isGpsEnabled(context)
+                        val newPerms = checkAllPermissions(context)
+                        if (newGps != gpsEnabled) gpsEnabled = newGps
+                        if (newPerms != permissionsGranted) permissionsGranted = newPerms
+                        delay(1000)
+                    }
+                }
+
+                AppScaffold {
+                    if (isBound && exerciseService != null) {
+                        val service = exerciseService!!
+                        val serviceStatus by service.serviceStatus.collectAsStateWithLifecycle()
+                        val locationAvailability by service.locationAvailability.collectAsStateWithLifecycle()
+
+                        BackHandler(enabled = screenState != ScreenState.ACTIVITIES) {
+                            when (screenState) {
+                                ScreenState.RUN_PREPARE -> screenState = ScreenState.ACTIVITIES
+                                ScreenState.SUMMARY -> screenState = ScreenState.ACTIVITIES
+                                ScreenState.TRACKING -> {
+                                    // Stay on tracking screen
+                                }
+                                else -> {}
+                            }
+                        }
+
+                        when (screenState) {
+                            ScreenState.ACTIVITIES -> ActivitiesScreen {
+                                screenState = ScreenState.RUN_PREPARE
+                            }
+                            ScreenState.RUN_PREPARE -> {
+                                val historyItems by historyViewModel.items.collectAsStateWithLifecycle()
+                                RunPrepareScreen(
+                                    permissionsGranted = permissionsGranted,
+                                    gpsEnabled = gpsEnabled,
+                                    locationAvailability = locationAvailability,
+                                    serviceStatus = serviceStatus,
+                                    history = historyItems,
+                                    expandedId = expandedId,
+                                    onToggleExpand = { id ->
+                                        expandedId = if (expandedId == id) null else id
+                                    },
+                                    onSyncClick = { id ->
+                                        historyViewModel.onSyncClick(id)
+                                    },
+                                    onDelete = { id ->
+                                        historyViewModel.delete(id)
+                                    },
+                                    onStart = {
+                                        service.startExercise()
+                                    },
+                                    onRefreshStatus = {
+                                        permissionsGranted = checkAllPermissions(context)
+                                        gpsEnabled = isGpsEnabled(context)
+                                    }
+                                )
+                            }
+                            ScreenState.TRACKING -> WorkoutScreen(
+                                service = service,
+                                onTogglePause = {
+                                    performTogglePause()
+                                },
+                                onFinish = {
+                                    performFinish()
+                                }
+                            )
+                            ScreenState.SUMMARY -> SummaryScreen(
+                                summary = summaryData!!,
+                                onRecord = {
+                                    screenState = ScreenState.ACTIVITIES
+                                }
+                            )
+                        }
+
+                        LaunchedEffect(serviceStatus) {
+                            if (serviceStatus is ServiceStatus.Active && screenState == ScreenState.RUN_PREPARE) {
+                                screenState = ScreenState.TRACKING
+                            }
+                        }
+
+                        LaunchedEffect(isBound, permissionsGranted, gpsEnabled, screenState) {
+                            if (screenState == ScreenState.RUN_PREPARE && isBound && permissionsGranted && gpsEnabled) {
+                                if (service.serviceStatus.value is ServiceStatus.Idle) {
+                                    service.prepareExercise()
+                                }
+                            }
+                        }
+                    } else {
+                        LoadingScreen()
+                    }
                 }
             }
         }
@@ -364,6 +390,11 @@ fun RunPrepareScreen(
     gpsEnabled: Boolean,
     locationAvailability: LocationAvailability,
     serviceStatus: ServiceStatus,
+    history: List<HistoryItemUi>?,
+    expandedId: String?,
+    onToggleExpand: (String) -> Unit,
+    onSyncClick: (String) -> Unit,
+    onDelete: (String) -> Unit,
     onStart: () -> Unit,
     onRefreshStatus: () -> Unit
 ) {
@@ -372,6 +403,8 @@ fun RunPrepareScreen(
     val context = LocalContext.current
 
     var isStarting by remember { mutableStateOf(false) }
+    var deleteTarget by remember { mutableStateOf<HistoryItemUi?>(null) }
+    var showDelete by remember { mutableStateOf(false) }
 
     LaunchedEffect(permissionsGranted, gpsEnabled) {
         isStarting = false
@@ -405,99 +438,163 @@ fun RunPrepareScreen(
         else -> R.drawable.ic_gps_searching
     }
 
-    ScreenScaffold(scrollState = columnState) { contentPadding ->
-        TransformingLazyColumn(
-            state = columnState,
-            contentPadding = contentPadding,
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            item {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 5.dp, bottom = 1.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        painter = painterResource(gpsIcon),
-                        contentDescription = "GPS Status",
-                        tint = gpsColor,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-            }
-
-            item {
-                ListHeader(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .transformedHeight(this, transformationSpec),
-                    transformation = SurfaceTransformation(transformationSpec)
-                ) {
-                    Text(text = "Run")
-                }
-            }
-
-            if (!gpsEnabled) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        ScreenScaffold(scrollState = columnState) { contentPadding ->
+            TransformingLazyColumn(
+                state = columnState,
+                contentPadding = contentPadding,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
                 item {
-                    Text(
-                        text = "GPS is disabled.",
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(3.dp),
-                        textAlign = TextAlign.Center
-                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 5.dp, bottom = 1.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            painter = painterResource(gpsIcon),
+                            contentDescription = "GPS Status",
+                            tint = gpsColor,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
-            }
 
-            if (serviceStatus is ServiceStatus.Error) {
                 item {
-                    Text(
-                        text = serviceStatus.message,
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(3.dp),
-                        textAlign = TextAlign.Center
-                    )
+                    ListHeader(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .transformedHeight(this, transformationSpec),
+                        transformation = SurfaceTransformation(transformationSpec)
+                    ) {
+                        Text(text = "Run")
+                    }
                 }
-            }
 
-            item {
-                Button(
-                    modifier = Modifier
-                        .fillMaxWidth(0.9f)
-                        .padding(top = 8.dp)
-                        .transformedHeight(this, transformationSpec),
-                    transformation = SurfaceTransformation(transformationSpec),
-                    enabled = !isStarting && serviceStatus !is ServiceStatus.Starting,
-                    onClick = {
-                        onRefreshStatus()
-                        
-                        if (!permissionsGranted) {
-                            permissionLauncher.launch(getRequestablePermissions())
-                        } else if (!gpsEnabled) {
-                            val intent = Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
-                            context.startActivity(intent)
-                        } else {
-                            isStarting = true
-                            onStart()
+                if (!gpsEnabled) {
+                    item {
+                        Text(
+                            text = "GPS is disabled.",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(3.dp),
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+
+                if (serviceStatus is ServiceStatus.Error) {
+                    item {
+                        Text(
+                            text = serviceStatus.message,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(3.dp),
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+
+                item {
+                    Button(
+                        modifier = Modifier
+                            .fillMaxWidth(0.9f)
+                            .padding(top = 8.dp)
+                            .transformedHeight(this, transformationSpec),
+                        transformation = SurfaceTransformation(transformationSpec),
+                        enabled = !isStarting && serviceStatus !is ServiceStatus.Starting,
+                        onClick = {
+                            onRefreshStatus()
+
+                            if (!permissionsGranted) {
+                                permissionLauncher.launch(getRequestablePermissions())
+                            } else if (!gpsEnabled) {
+                                val intent = Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
+                                context.startActivity(intent)
+                            } else {
+                                isStarting = true
+                                onStart()
+                            }
+                        }
+                    ) {
+                        Text(
+                            text = when {
+                                !permissionsGranted -> "Grant Permissions"
+                                !gpsEnabled -> "Enable GPS"
+                                isStarting -> "Starting..."
+                                else -> "Start"
+                            },
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+
+                item {
+                    ListHeader(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 12.dp)
+                            .transformedHeight(this, transformationSpec),
+                        transformation = SurfaceTransformation(transformationSpec)
+                    ) {
+                        Text(text = "History")
+                    }
+                }
+
+                when {
+                    history == null -> {
+                        // Loading state: render nothing
+                    }
+                    history.isEmpty() -> {
+                        item {
+                            Text(
+                                text = "No runs yet",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 8.dp),
+                                textAlign = TextAlign.Center
+                            )
                         }
                     }
-                ) {
-                    Text(
-                        text = when {
-                            !permissionsGranted -> "Grant Permissions"
-                            !gpsEnabled -> "Enable GPS"
-                            isStarting -> "Starting..."
-                            else -> "Start"
-                        },
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    else -> {
+                        history.forEach { entry ->
+                            item(key = entry.id) {
+                                HistoryRow(
+                                    item = entry,
+                                    isExpanded = (expandedId == entry.id),
+                                    onToggleExpand = onToggleExpand,
+                                    onSyncClick = onSyncClick,
+                                    onPendingDelete = {
+                                        deleteTarget = it
+                                        showDelete = true
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth(0.9f)
+                                        .padding(top = 6.dp)
+                                        .transformedHeight(this, transformationSpec)
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
+
+        DeleteConfirmationDialog(
+            visible = showDelete,
+            target = deleteTarget,
+            onConfirm = { t ->
+                onDelete(t.id)
+                if (expandedId == t.id) onToggleExpand(t.id)
+                showDelete = false
+            },
+            onDismiss = {
+                showDelete = false
+            }
+        )
     }
 }
 

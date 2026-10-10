@@ -6,7 +6,7 @@ import kotlinx.serialization.Serializable
 data class Header(
     val v: Int = 1,
     val id: String,
-    val sport: String = "RUNNING",
+    val sport: String = "RUN",
     val start: Long
 )
 

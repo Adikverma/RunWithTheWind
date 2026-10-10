@@ -33,6 +33,7 @@ import androidx.wear.ongoing.Status
 import com.example.runwiththewind.wear.data.ActivityRecorder
 import com.example.runwiththewind.wear.data.RecordingSession
 import com.example.runwiththewind.wear.data.Sample
+import com.example.runwiththewind.wear.data.SportType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -256,7 +257,7 @@ class ExerciseService : Service() {
         }
 
         val startMs = System.currentTimeMillis()
-        val rec = recorder.start(startMs, serviceScope)
+        val rec = recorder.start(startMs, serviceScope, SportType.RUN)
         try {
             startService(Intent(this, ExerciseService::class.java))
             startForeground(NOTIFICATION_ID, createNotification(), foregroundServiceType())

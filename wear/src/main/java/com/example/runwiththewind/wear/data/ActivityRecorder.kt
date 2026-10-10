@@ -22,8 +22,6 @@ private const val TAG = "ActivityRecorder"
 private const val FLUSH_INTERVAL_NS = 5_000_000_000L
 private const val MIN_PACE_DISTANCE_M = 5.0
 private const val MAX_PACE_MIN_PER_KM = 15.0
-private const val SYNCED_RETENTION_MS = 7L * 24 * 60 * 60 * 1000
-private const val UNSYNCED_MAX_AGE_MS = 30L * 24 * 60 * 60 * 1000   // policy: confirm
 
 private val json = Json { encodeDefaults = true; explicitNulls = false; ignoreUnknownKeys = true }
 
@@ -40,17 +38,22 @@ class ActivityRecorder(
     private val dir = File(filesDir, ACTIVITY_DIR).apply { mkdirs() }
 
     /** Call once per run. The row is inserted before any bytes are written. */
-    suspend fun start(startMs: Long, scope: CoroutineScope): RecordingSession =
+    suspend fun start(
+        startMs: Long,
+        scope: CoroutineScope,
+        sport: SportType = SportType.RUN
+    ): RecordingSession =
         withContext(Dispatchers.IO) {
             val id = UUID.randomUUID().toString()
             val entity = ActivityEntity(
                 id = id,
                 startEpochMs = startMs,
+                sport = sport,
                 status = RecStatus.RECORDING,
                 filePath = "$ACTIVITY_DIR/$id.jsonl"
             )
             dao.insert(entity)
-            RecordingSession(id, startMs, entity, dir, dao, scope)
+            RecordingSession(id, startMs, entity, dir, dao, scope, sport)
         }
 
     /** Finish runs left RECORDING by a crash or kill. Pass the live session id to skip it. */
@@ -90,16 +93,28 @@ class ActivityRecorder(
         raw.delete()                                    // only after the DB row is correct
     }
 
-    /** Deletes old runs. DB rows go first; a failed file delete leaves an orphan, not a dangling row. */
+    /** Must only be called while holding the service lifecycle mutex. */
     suspend fun pruneOld(now: Long = System.currentTimeMillis()) =
         withContext(NonCancellable + Dispatchers.IO) {
-            val victims = dao.prunable(
-                syncedCutoff = now - SYNCED_RETENTION_MS,
-                hardCutoff = now - UNSYNCED_MAX_AGE_MS
-            )
-            if (victims.isEmpty()) return@withContext
-            dao.delete(victims.map { it.id })
-            victims.forEach { File(filesDir, it.filePath).delete() }
+            // 1. Expired rows first (row, then file)
+            val expiredRows = dao.rowsExpired(now - RetentionPolicy.daysToMs(RetentionPolicy.ROW_RETENTION_DAYS))
+            if (expiredRows.isNotEmpty()) {
+                dao.delete(expiredRows.map { it.id })
+                expiredRows.forEach { File(filesDir, it.filePath).delete() }
+            }
+            // 2. Expired track files of rows that survive (DB first, then file)
+            val expiredBlobs = dao.blobExpired(now - RetentionPolicy.daysToMs(RetentionPolicy.BLOB_RETENTION_DAYS))
+            if (expiredBlobs.isNotEmpty()) {
+                dao.markTracksRemoved(expiredBlobs.map { it.id })
+                expiredBlobs.forEach { File(filesDir, it.filePath).delete() }
+            }
+            // 3. Orphan sweep: LIST FILES FIRST, THEN READ IDS. A file can only exist if its row was inserted before it.
+            val files = dir.listFiles()?.toList().orEmpty()
+            val knownIds = dao.allIds().toSet()
+            files.forEach { f ->
+                if (f.name.endsWith(".tmp")) return@forEach
+                if (f.name.substringBefore('.') !in knownIds) f.delete()
+            }
         }
 
     private data class Stats(
@@ -142,7 +157,8 @@ class RecordingSession internal constructor(
     private val entity: ActivityEntity,
     private val dir: File,
     private val dao: ActivityDao,
-    scope: CoroutineScope
+    scope: CoroutineScope,
+    private val sport: SportType = SportType.RUN
 ) {
     private val raw = File(dir, "$id.jsonl")
     private val gz = File(dir, "$id.jsonl.gz")
@@ -151,7 +167,7 @@ class RecordingSession internal constructor(
     private val writer: Job = scope.launch(Dispatchers.IO) {
         try {
             raw.bufferedWriter().use { out ->
-                out.appendLine(json.encodeToString(Header(id = id, start = startMs)))
+                out.appendLine(json.encodeToString(Header(id = id, sport = sport.name, start = startMs)))
                 var lastFlush = System.nanoTime()
                 for (s in channel) {
                     out.appendLine(json.encodeToString(s))
