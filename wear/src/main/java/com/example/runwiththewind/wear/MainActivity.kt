@@ -9,6 +9,7 @@ import android.content.IntentFilter
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.location.LocationManager
+import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.provider.Settings
@@ -47,13 +48,11 @@ import androidx.compose.material.icons.filled.GpsOff
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,11 +67,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
-import androidx.health.services.client.data.DataType
 import androidx.health.services.client.data.ExerciseState
 import androidx.health.services.client.data.LocationAvailability
 import androidx.lifecycle.Lifecycle
@@ -92,8 +89,6 @@ import androidx.wear.compose.material3.Text
 import androidx.wear.compose.material3.lazy.rememberTransformationSpec
 import androidx.wear.compose.material3.lazy.transformedHeight
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import java.time.Instant
 import java.util.concurrent.TimeUnit
 
 class MainActivity : ComponentActivity() {
@@ -164,7 +159,6 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         val intent = Intent(this, ExerciseService::class.java)
-        startService(intent)
         bindService(intent, connection, BIND_AUTO_CREATE)
 
         setContent {
@@ -229,8 +223,8 @@ class MainActivity : ComponentActivity() {
 
             AppScaffold {
                 if (isBound && exerciseService != null) {
-                    val serviceStatus by exerciseService!!.serviceStatus.collectAsState()
-                    val locationAvailability by exerciseService!!.locationAvailability.collectAsState()
+                    val serviceStatus by exerciseService!!.serviceStatus.collectAsStateWithLifecycle()
+                    val locationAvailability by exerciseService!!.locationAvailability.collectAsStateWithLifecycle()
 
                     BackHandler(enabled = screenState != ScreenState.ACTIVITIES) {
                         when (screenState) {
@@ -284,9 +278,9 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // Prepare exercise on app load and when permissions/GPS are ready
+                    // Prepare exercise on RUN_PREPARE screen when permissions/GPS are ready
                     LaunchedEffect(isBound, permissionsGranted, gpsEnabled, screenState) {
-                        if (isBound && exerciseService != null && permissionsGranted && gpsEnabled) {
+                        if (screenState == ScreenState.RUN_PREPARE && isBound && exerciseService != null && permissionsGranted && gpsEnabled) {
                             if (exerciseService!!.serviceStatus.value is ServiceStatus.Idle) {
                                 exerciseService?.prepareExercise()
                             }
@@ -296,17 +290,6 @@ class MainActivity : ComponentActivity() {
                     LoadingScreen()
                 }
             }
-        }
-    }
-
-    private fun checkAllPermissions(context: Context): Boolean {
-        return arrayOf(
-            Manifest.permission.BODY_SENSORS,
-            Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACTIVITY_RECOGNITION,
-            Manifest.permission.POST_NOTIFICATIONS
-        ).all {
-            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
         }
     }
 
@@ -495,20 +478,13 @@ fun RunPrepareScreen(
                         .padding(top = 8.dp)
                         .transformedHeight(this, transformationSpec),
                     transformation = SurfaceTransformation(transformationSpec),
-                    enabled = !isStarting && serviceStatus !is ServiceStatus.Starting,
+                    enabled = !isStarting && serviceStatus !is ServiceStatus.Starting && serviceStatus !is ServiceStatus.Stopping,
                     onClick = {
                         // Refresh status before acting
                         onRefreshStatus()
                         
                         if (!permissionsGranted) {
-                            permissionLauncher.launch(
-                                arrayOf(
-                                    Manifest.permission.BODY_SENSORS,
-                                    Manifest.permission.ACCESS_FINE_LOCATION,
-                                    Manifest.permission.ACTIVITY_RECOGNITION,
-                                    Manifest.permission.POST_NOTIFICATIONS
-                                )
-                            )
+                            permissionLauncher.launch(getRequestablePermissions())
                         } else if (!gpsEnabled) {
                             val intent = Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
                             context.startActivity(intent)
@@ -539,7 +515,7 @@ fun RunPrepareScreen(
 fun WorkoutScreen(
     service: ExerciseService,
     onTogglePause: () -> Unit,
-    onFinish: (RunSummary) -> Unit
+    onFinish: () -> Unit
 ) {
     val verticalPagerState = rememberPagerState(pageCount = { 2 })
 
@@ -555,12 +531,7 @@ fun WorkoutScreen(
         } else {
             ControlsScreen(
                 service = service,
-                onFinish = {
-                    val moving = service.activeDurationMillis.value
-                    val distance = service.totalDistance.value
-                    val avgPace = service.averagePace.value
-                    onFinish(RunSummary(moving, distance, avgPace))
-                }
+                onFinish = onFinish
             )
         }
     }
@@ -748,7 +719,7 @@ fun ControlsScreen(
     service: ExerciseService,
     onFinish: () -> Unit
 ) {
-    val exerciseUpdate by service.exerciseState.collectAsState()
+    val exerciseUpdate by service.exerciseState.collectAsStateWithLifecycle()
     val exerciseState = exerciseUpdate?.exerciseStateInfo?.state ?: ExerciseState.ACTIVE
 
     Column(
@@ -906,4 +877,33 @@ fun LoadingScreen() {
             contentScale = ContentScale.Crop
         )
     }
+}
+
+fun getBodySensorsPermission(): String {
+    return if (Build.VERSION.SDK_INT >= 36) {
+        "android.permission.health.READ_HEART_RATE"
+    } else {
+        Manifest.permission.BODY_SENSORS
+    }
+}
+
+fun checkAllPermissions(context: Context): Boolean {
+    val required = arrayOf(
+        getBodySensorsPermission(),
+        Manifest.permission.ACCESS_FINE_LOCATION,
+        Manifest.permission.ACTIVITY_RECOGNITION
+    )
+    return required.all {
+        ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+    }
+}
+
+fun getRequestablePermissions(): Array<String> {
+    val list = mutableListOf(
+        getBodySensorsPermission(),
+        Manifest.permission.ACCESS_FINE_LOCATION,
+        Manifest.permission.ACTIVITY_RECOGNITION,
+        Manifest.permission.POST_NOTIFICATIONS
+    )
+    return list.toTypedArray()
 }

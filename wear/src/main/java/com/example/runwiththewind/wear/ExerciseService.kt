@@ -13,6 +13,7 @@ import android.location.LocationManager
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import androidx.compose.runtime.Immutable
 import androidx.concurrent.futures.await
 import androidx.core.app.NotificationCompat
@@ -30,6 +31,7 @@ import androidx.health.services.client.data.LocationAvailability
 import androidx.health.services.client.data.WarmUpConfig
 import androidx.wear.ongoing.OngoingActivity
 import androidx.wear.ongoing.Status
+import com.google.android.gms.tasks.Tasks
 import com.google.android.gms.wearable.Asset
 import com.google.android.gms.wearable.PutDataMapRequest
 import com.google.android.gms.wearable.Wearable
@@ -42,6 +44,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import com.example.runwiththewind.wear.data.ActivityRecorder
+import com.example.runwiththewind.wear.data.Sample
+import java.time.Instant
 
 @Immutable
 data class WorkoutUiState(
@@ -61,6 +67,9 @@ class ExerciseService : Service() {
 
     private val binder = LocalBinder()
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    private val database by lazy { (application as MainApplication).database }
+    private val recorder by lazy { ActivityRecorder(filesDir, database.activityDao(), serviceScope) }
 
     private val healthServicesClient by lazy { HealthServices.getClient(this) }
     private val exerciseClient by lazy { healthServicesClient.exerciseClient }
@@ -137,10 +146,17 @@ class ExerciseService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        serviceScope.launch {
+            recorder.recoverInterrupted()
+            recorder.pruneOld()
+            runCatching {
+                exerciseClient.endExerciseAsync().await()
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
@@ -156,7 +172,9 @@ class ExerciseService : Service() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
-        stopExercise()
+        if (_isRecording.value || _serviceStatus.value is ServiceStatus.Active) {
+            stopExercise()
+        }
     }
 
     private fun updateUiState() {
@@ -213,6 +231,8 @@ class ExerciseService : Service() {
     fun startExercise() {
         if (_isRecording.value || _serviceStatus.value is ServiceStatus.Starting) return
 
+        startService(Intent(this, ExerciseService::class.java))
+
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
             != PackageManager.PERMISSION_GRANTED) {
             _serviceStatus.value = ServiceStatus.Error("Location permission missing")
@@ -253,38 +273,9 @@ class ExerciseService : Service() {
             return
         }
 
-        // Setup Ongoing Activity
-        try {
-            val intent = Intent(this, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
-            }
-            val pendingIntent = PendingIntent.getActivity(
-                this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-            val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle("Run with the Wind")
-                .setContentText("Running session active")
-                .setSmallIcon(R.drawable.run_with_wind)
-                .setContentIntent(pendingIntent)
-                .setOngoing(true)
-                .setCategory(NotificationCompat.CATEGORY_WORKOUT)
-
-            val ongoingActivity = OngoingActivity.Builder(
-                this,
-                NOTIFICATION_ID,
-                builder
-            )
-            .setTouchIntent(pendingIntent)
-            .setStatus(Status.Builder().addTemplate("Running").build())
-            .build()
-
-            ongoingActivity.apply(this@ExerciseService)
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-
         _isRecording.value = true
         _isPaused.value = false
+        recorder.begin(_startTimeMillis)
         _totalDistance.value = 0.0
         _startTimeMillis = System.currentTimeMillis()
         _serviceStatus.value = ServiceStatus.Starting
@@ -344,19 +335,19 @@ class ExerciseService : Service() {
             }
         }
     }
-
     fun stopExercise(keepError: Boolean = false) {
         if (!_isRecording.value && _serviceStatus.value == ServiceStatus.Idle) return
+        if (_serviceStatus.value is ServiceStatus.Stopping) return
 
-        serviceScope.launch {
-            try {
-                exerciseClient.endExerciseAsync().await()
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
+        _serviceStatus.value = ServiceStatus.Stopping
 
-        stopTicker()
+        val moving = _activeDurationMillis.value
+        val elapsed = _elapsedDurationMillis.value
+        val dist = cumulativeDistanceMeters
+        val avgPace = _averagePace.value
+        val elev = _elevationGain.value
+        val finalHr = _heartRate.value.takeIf { it > 0 }
+
         _isRecording.value = false
         _isPaused.value = false
         if (!keepError) {
@@ -371,10 +362,40 @@ class ExerciseService : Service() {
         _elapsedDurationMillis.value = 0L
         updateUiState()
 
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        serviceScope.launch {
+            try {
+                stopTicker()
+                runCatching { exerciseClient.endExerciseAsync().await() }
 
-        handoffDataToPhone()
-        stopSelf()
+                recorder.finish {
+                    copy(
+                        endEpochMs = System.currentTimeMillis(),
+                        movingMs = moving,
+                        elapsedMs = elapsed,
+                        distanceM = dist,
+                        avgPace = avgPace,
+                        avgHr = finalHr,
+                        elevationGainM = elev
+                    )
+                }
+                recorder.pruneOld()
+
+                handoffDataToPhone(
+                    activeDurationMillis = moving,
+                    distanceMeters = dist,
+                    avgPace = avgPace,
+                    heartRate = finalHr ?: 0.0,
+                    elevationGain = elev
+                )
+
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            } catch (e: Exception) {
+                e.printStackTrace()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
+        }
     }
 
     private fun startTicker() {
@@ -461,14 +482,6 @@ class ExerciseService : Service() {
                 if (distTotalPoint.total > cumulativeDistanceMeters) {
                     cumulativeDistanceMeters = distTotalPoint.total
                 }
-            } ?: run {
-                val distPoints = update.latestMetrics.getData(DataType.DISTANCE)
-                if (distPoints.isNotEmpty()) {
-                    val sumIntervals = distPoints.sumOf { it.value }
-                    if (sumIntervals > 0.0) {
-                        cumulativeDistanceMeters += sumIntervals
-                    }
-                }
             }
 
             _totalDistance.value = cumulativeDistanceMeters
@@ -515,6 +528,23 @@ class ExerciseService : Service() {
             }
 
             updateUiState()
+
+            val boot = Instant.ofEpochMilli(System.currentTimeMillis() - SystemClock.elapsedRealtime())
+            val hrValInt = _heartRate.value.takeIf { it > 0 }?.toInt()
+            val speedVal = speedFromHs?.toFloat()
+            update.latestMetrics.getData(DataType.LOCATION).forEach { p ->
+                recorder.add(
+                    Sample(
+                        t = p.getTimeInstant(boot).toEpochMilli(),
+                        lat = p.value.latitude,
+                        lon = p.value.longitude,
+                        alt = p.value.altitude.takeUnless { it.isNaN() },
+                        hr = hrValInt,
+                        dist = cumulativeDistanceMeters,
+                        spd = speedVal
+                    )
+                )
+            }
         }
 
         override fun onLapSummaryReceived(lapSummary: ExerciseLapSummary) {}
@@ -535,21 +565,34 @@ class ExerciseService : Service() {
         return locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
     }
 
-    private fun handoffDataToPhone() {
-        serviceScope.launch {
-            try {
-                val request = PutDataMapRequest.create("/workout_finish").apply {
-                    dataMap.putLong("timestamp", System.currentTimeMillis())
-                    dataMap.putString("exercise_type", "RUNNING")
-                    val summaryData = "Workout Summary: Distance, Heart Rate, Pace metrics successfully captured."
-                    val asset = Asset.createFromBytes(summaryData.toByteArray())
-                    dataMap.putAsset("workout_asset", asset)
-                }.asPutDataRequest().setUrgent()
+    private suspend fun handoffDataToPhone(
+        activeDurationMillis: Long,
+        distanceMeters: Double,
+        avgPace: Double,
+        heartRate: Double,
+        elevationGain: Double
+    ) {
+        try {
+            val request = PutDataMapRequest.create("/workout_finish").apply {
+                dataMap.putLong("timestamp", System.currentTimeMillis())
+                dataMap.putString("exercise_type", "RUNNING")
+                dataMap.putLong("active_duration_ms", activeDurationMillis)
+                dataMap.putDouble("distance_m", distanceMeters)
+                dataMap.putDouble("avg_pace", avgPace)
+                dataMap.putDouble("heart_rate", heartRate)
+                dataMap.putDouble("elevation_gain", elevationGain)
+                val summaryData = "Workout Summary: Distance=%.2f m, Duration=%d ms, AvgPace=%.2f, HR=%.1f, Elev=%.1f".format(
+                    distanceMeters, activeDurationMillis, avgPace, heartRate, elevationGain
+                )
+                val asset = Asset.createFromBytes(summaryData.toByteArray())
+                dataMap.putAsset("workout_asset", asset)
+            }.asPutDataRequest().setUrgent()
 
-                Wearable.getDataClient(this@ExerciseService).putDataItem(request)
-            } catch (e: Exception) {
-                e.printStackTrace()
+            withContext(Dispatchers.IO) {
+                Tasks.await(Wearable.getDataClient(this@ExerciseService).putDataItem(request))
             }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 
@@ -574,15 +617,31 @@ class ExerciseService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Run with the Wind")
             .setContentText("Recording your run...")
-            .setSmallIcon(R.drawable.run_with_wind)
+            .setSmallIcon(R.drawable.ic_run_notification)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_WORKOUT)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+
+        try {
+            val ongoingActivity = OngoingActivity.Builder(
+                this,
+                NOTIFICATION_ID,
+                builder
+            )
+            .setTouchIntent(pendingIntent)
+            .setStatus(Status.Builder().addTemplate("Running").build())
             .build()
+
+            ongoingActivity.apply(this)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        return builder.build()
     }
 
     companion object {
@@ -595,5 +654,6 @@ sealed class ServiceStatus {
     object Idle : ServiceStatus()
     object Starting : ServiceStatus()
     object Active : ServiceStatus()
+    object Stopping : ServiceStatus()
     data class Error(val message: String) : ServiceStatus()
 }
