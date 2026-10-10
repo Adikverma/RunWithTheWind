@@ -12,11 +12,13 @@ data class Header(
 
 @Serializable
 data class Sample(
-    val t: Long,                 // epoch ms
+    val t: Long,               // epoch ms
     val lat: Double? = null,
     val lon: Double? = null,
-    val alt: Double? = null,
-    val hr: Int? = null,
-    val dist: Double? = null,
-    val spd: Float? = null
+    val alt: Double? = null,   // metres
+    val hr: Int? = null,       // bpm
+    val dist: Double? = null,  // cumulative metres
+    val spd: Float? = null,    // m/s
+    val mv: Long? = null,      // cumulative moving time, ms
+    val eg: Double? = null     // cumulative elevation gain, metres
 )

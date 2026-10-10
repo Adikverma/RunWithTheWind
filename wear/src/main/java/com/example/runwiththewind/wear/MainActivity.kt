@@ -29,7 +29,6 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -40,11 +39,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.DirectionsRun
-import androidx.compose.material.icons.filled.GpsFixed
-import androidx.compose.material.icons.filled.GpsNotFixed
-import androidx.compose.material.icons.filled.GpsOff
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -75,6 +69,7 @@ import androidx.health.services.client.data.LocationAvailability
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.wear.compose.foundation.lazy.TransformingLazyColumn
 import androidx.wear.compose.foundation.lazy.rememberTransformingLazyColumnState
 import androidx.wear.compose.material3.AppScaffold
@@ -102,8 +97,12 @@ class MainActivity : ComponentActivity() {
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             val binder = service as ExerciseService.LocalBinder
-            exerciseService = binder.getService()
+            val s = binder.getService()
+            exerciseService = s
             isBound = true
+            if (s.isRecording.value) {
+                screenState = ScreenState.TRACKING
+            }
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -151,11 +150,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         val splashScreen = installSplashScreen()
-        val startTime = System.currentTimeMillis()
-        splashScreen.setKeepOnScreenCondition {
-            val elapsed = System.currentTimeMillis() - startTime
-            !(isBound && exerciseService != null && elapsed >= 1500)
-        }
+        splashScreen.setKeepOnScreenCondition { !isBound }
         super.onCreate(savedInstanceState)
 
         val intent = Intent(this, ExerciseService::class.java)
@@ -184,7 +179,6 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // Listen for system location provider changes (e.g. toggled via Quick Settings tray)
             DisposableEffect(context) {
                 val receiver = object : BroadcastReceiver() {
                     override fun onReceive(context: Context?, intent: Intent?) {
@@ -205,12 +199,11 @@ class MainActivity : ComponentActivity() {
                     try {
                         context.unregisterReceiver(receiver)
                     } catch (e: Exception) {
-                        e.printStackTrace()
+                        // ignore unregister receiver exception
                     }
                 }
             }
 
-            // Periodic check while on RUN_PREPARE screen to handle quick settings / options tray toggles
             LaunchedEffect(screenState) {
                 while (screenState == ScreenState.RUN_PREPARE) {
                     val newGps = isGpsEnabled(context)
@@ -223,15 +216,16 @@ class MainActivity : ComponentActivity() {
 
             AppScaffold {
                 if (isBound && exerciseService != null) {
-                    val serviceStatus by exerciseService!!.serviceStatus.collectAsStateWithLifecycle()
-                    val locationAvailability by exerciseService!!.locationAvailability.collectAsStateWithLifecycle()
+                    val service = exerciseService!!
+                    val serviceStatus by service.serviceStatus.collectAsStateWithLifecycle()
+                    val locationAvailability by service.locationAvailability.collectAsStateWithLifecycle()
 
                     BackHandler(enabled = screenState != ScreenState.ACTIVITIES) {
                         when (screenState) {
                             ScreenState.RUN_PREPARE -> screenState = ScreenState.ACTIVITIES
                             ScreenState.SUMMARY -> screenState = ScreenState.ACTIVITIES
                             ScreenState.TRACKING -> {
-                                // Stay on tracking or handle confirmation
+                                // Stay on tracking screen
                             }
                             else -> {}
                         }
@@ -247,7 +241,7 @@ class MainActivity : ComponentActivity() {
                             locationAvailability = locationAvailability,
                             serviceStatus = serviceStatus,
                             onStart = {
-                                exerciseService?.startExercise()
+                                service.startExercise()
                             },
                             onRefreshStatus = {
                                 permissionsGranted = checkAllPermissions(context)
@@ -255,7 +249,7 @@ class MainActivity : ComponentActivity() {
                             }
                         )
                         ScreenState.TRACKING -> WorkoutScreen(
-                            service = exerciseService!!,
+                            service = service,
                             onTogglePause = {
                                 performTogglePause()
                             },
@@ -271,18 +265,16 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
-                    // Automatically switch to tracking if service becomes active
                     LaunchedEffect(serviceStatus) {
                         if (serviceStatus is ServiceStatus.Active && screenState == ScreenState.RUN_PREPARE) {
                             screenState = ScreenState.TRACKING
                         }
                     }
 
-                    // Prepare exercise on RUN_PREPARE screen when permissions/GPS are ready
                     LaunchedEffect(isBound, permissionsGranted, gpsEnabled, screenState) {
-                        if (screenState == ScreenState.RUN_PREPARE && isBound && exerciseService != null && permissionsGranted && gpsEnabled) {
-                            if (exerciseService!!.serviceStatus.value is ServiceStatus.Idle) {
-                                exerciseService?.prepareExercise()
+                        if (screenState == ScreenState.RUN_PREPARE && isBound && permissionsGranted && gpsEnabled) {
+                            if (service.serviceStatus.value is ServiceStatus.Idle) {
+                                service.prepareExercise()
                             }
                         }
                     }
@@ -353,7 +345,7 @@ fun ActivitiesScreen(onRunClick: () -> Unit) {
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Icon(
-                            imageVector = Icons.AutoMirrored.Filled.DirectionsRun,
+                            painter = painterResource(R.drawable.ic_run),
                             contentDescription = "Run",
                             modifier = Modifier.size(ButtonDefaults.IconSize)
                         )
@@ -402,15 +394,15 @@ fun RunPrepareScreen(
         locationAvailability == LocationAvailability.ACQUIRED_UNTETHERED ||
                 locationAvailability == LocationAvailability.ACQUIRED_TETHERED -> Color.Green
         locationAvailability == LocationAvailability.ACQUIRING -> Color.Yellow
-        else -> Color.Yellow // Default to searching if enabled but status unknown
+        else -> Color.Yellow
     }
 
     val gpsIcon = when {
-        !gpsEnabled -> Icons.Default.GpsOff
+        !gpsEnabled -> R.drawable.ic_gps_off
         locationAvailability == LocationAvailability.ACQUIRED_UNTETHERED ||
-                locationAvailability == LocationAvailability.ACQUIRED_TETHERED -> Icons.Default.GpsFixed
-        locationAvailability == LocationAvailability.ACQUIRING -> Icons.Default.GpsNotFixed
-        else -> Icons.Default.GpsNotFixed
+                locationAvailability == LocationAvailability.ACQUIRED_TETHERED -> R.drawable.ic_gps_fixed
+        locationAvailability == LocationAvailability.ACQUIRING -> R.drawable.ic_gps_searching
+        else -> R.drawable.ic_gps_searching
     }
 
     ScreenScaffold(scrollState = columnState) { contentPadding ->
@@ -428,7 +420,7 @@ fun RunPrepareScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
-                        imageVector = gpsIcon,
+                        painter = painterResource(gpsIcon),
                         contentDescription = "GPS Status",
                         tint = gpsColor,
                         modifier = Modifier.size(18.dp)
@@ -478,9 +470,8 @@ fun RunPrepareScreen(
                         .padding(top = 8.dp)
                         .transformedHeight(this, transformationSpec),
                     transformation = SurfaceTransformation(transformationSpec),
-                    enabled = !isStarting && serviceStatus !is ServiceStatus.Starting && serviceStatus !is ServiceStatus.Stopping,
+                    enabled = !isStarting && serviceStatus !is ServiceStatus.Starting,
                     onClick = {
-                        // Refresh status before acting
                         onRefreshStatus()
                         
                         if (!permissionsGranted) {
@@ -880,7 +871,7 @@ fun LoadingScreen() {
 }
 
 fun getBodySensorsPermission(): String {
-    return if (Build.VERSION.SDK_INT >= 36) {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
         "android.permission.health.READ_HEART_RATE"
     } else {
         Manifest.permission.BODY_SENSORS

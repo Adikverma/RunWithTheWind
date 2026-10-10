@@ -15,7 +15,7 @@
 
     <application
         android:name=".MainApplication"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:icon="@drawable/run_with_wind"
         android:label="Run with the Wind"
         android:supportsRtl="true"
