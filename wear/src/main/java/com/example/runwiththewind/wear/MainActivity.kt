@@ -34,12 +34,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -87,9 +91,11 @@ import androidx.wear.compose.material3.Text
 import androidx.wear.compose.material3.lazy.rememberTransformationSpec
 import androidx.wear.compose.material3.lazy.transformedHeight
 import androidx.wear.compose.material3.ListHeaderDefaults
+import androidx.wear.compose.material3.CompactButton
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.wear.compose.foundation.lazy.TransformingLazyColumnDefaults
 import androidx.wear.compose.foundation.rotary.RotaryScrollableDefaults
+import androidx.wear.compose.material3.CompactButton
 import kotlinx.coroutines.launch
 import com.example.runwiththewind.wear.ui.history.DeleteConfirmationDialog
 import com.example.runwiththewind.wear.ui.history.HistoryItemUi
@@ -175,12 +181,8 @@ class MainActivity : ComponentActivity() {
                 val context = LocalContext.current
                 var expandedId by rememberSaveable { mutableStateOf<String?>(null) }
 
-                var permissionsGranted by remember {
-                    mutableStateOf(checkAllPermissions(context))
-                }
-                var gpsEnabled by remember {
-                    mutableStateOf(isGpsEnabled(context))
-                }
+                var permissionsGranted by remember { mutableStateOf(checkAllPermissions(this@MainActivity)) }
+                var gpsEnabled by remember { mutableStateOf(isGpsEnabled(this@MainActivity)) }
 
                 val lifecycleOwner = LocalLifecycleOwner.current
                 DisposableEffect(lifecycleOwner) {
@@ -241,6 +243,8 @@ class MainActivity : ComponentActivity() {
                             when (screenState) {
                                 ScreenState.RUN_PREPARE -> screenState = ScreenState.ACTIVITIES
                                 ScreenState.SUMMARY -> screenState = ScreenState.ACTIVITIES
+                                ScreenState.HISTORY -> screenState = ScreenState.ACTIVITIES
+                                ScreenState.SETTINGS -> screenState = ScreenState.ACTIVITIES
                                 ScreenState.TRACKING -> {
                                     // Stay on tracking screen
                                 }
@@ -249,16 +253,29 @@ class MainActivity : ComponentActivity() {
                         }
 
                         when (screenState) {
-                            ScreenState.ACTIVITIES -> ActivitiesScreen {
-                                screenState = ScreenState.RUN_PREPARE
-                            }
+                            ScreenState.ACTIVITIES -> ActivitiesScreen(
+                                onRunClick = { screenState = ScreenState.RUN_PREPARE },
+                                onHistoryClick = { screenState = ScreenState.HISTORY },
+                                onSettingsClick = { screenState = ScreenState.SETTINGS }
+                            )
                             ScreenState.RUN_PREPARE -> {
-                                val historyItems by historyViewModel.items.collectAsStateWithLifecycle()
                                 RunPrepareScreen(
                                     permissionsGranted = permissionsGranted,
                                     gpsEnabled = gpsEnabled,
                                     locationAvailability = locationAvailability,
                                     serviceStatus = serviceStatus,
+                                    onStart = {
+                                        service.startExercise()
+                                    },
+                                    onRefreshStatus = {
+                                        permissionsGranted = checkAllPermissions(context)
+                                        gpsEnabled = isGpsEnabled(context)
+                                    }
+                                )
+                            }
+                            ScreenState.HISTORY -> {
+                                val historyItems by historyViewModel.items.collectAsStateWithLifecycle()
+                                HistoryScreen(
                                     history = historyItems,
                                     expandedId = expandedId,
                                     onToggleExpand = { id ->
@@ -269,15 +286,11 @@ class MainActivity : ComponentActivity() {
                                     },
                                     onDelete = { id ->
                                         historyViewModel.delete(id)
-                                    },
-                                    onStart = {
-                                        service.startExercise()
-                                    },
-                                    onRefreshStatus = {
-                                        permissionsGranted = checkAllPermissions(context)
-                                        gpsEnabled = isGpsEnabled(context)
                                     }
                                 )
+                            }
+                            ScreenState.SETTINGS -> {
+                                SettingsScreen()
                             }
                             ScreenState.TRACKING -> WorkoutScreen(
                                 service = service,
@@ -342,7 +355,11 @@ data class RunSummary(
 )
 
 @Composable
-fun ActivitiesScreen(onRunClick: () -> Unit) {
+fun ActivitiesScreen(
+    onRunClick: () -> Unit,
+    onHistoryClick: () -> Unit,
+    onSettingsClick: () -> Unit
+) {
     val columnState = rememberTransformingLazyColumnState()
     val transformationSpec = rememberTransformationSpec()
 
@@ -388,6 +405,61 @@ fun ActivitiesScreen(onRunClick: () -> Unit) {
                     }
                 }
             }
+            
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth(0.9f)
+                        .padding(top = 8.dp)
+                        .transformedHeight(this, transformationSpec)
+                        .minimumVerticalContentPadding(ButtonDefaults.minimumVerticalListContentPadding),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
+                ) {
+                    Button(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(36.dp)
+                            .border(
+                                width = 1.dp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                shape = CircleShape
+                            ),
+                        onClick = onHistoryClick,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color.Transparent,
+                            contentColor = MaterialTheme.colorScheme.onSurface
+                        )
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+                            Icon(Icons.Default.Menu, "History", modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("History", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+
+                    Button(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(36.dp)
+                            .border(
+                                width = 1.dp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                shape = CircleShape
+                            ),
+                        onClick = onSettingsClick,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color.Transparent,
+                            contentColor = MaterialTheme.colorScheme.onSurface
+                        )
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+                            Icon(Icons.Default.Settings, "Settings", modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Settings", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -398,26 +470,11 @@ fun RunPrepareScreen(
     gpsEnabled: Boolean,
     locationAvailability: LocationAvailability,
     serviceStatus: ServiceStatus,
-    history: List<HistoryItemUi>?,
-    expandedId: String?,
-    onToggleExpand: (String) -> Unit,
-    onSyncClick: (String) -> Unit,
-    onDelete: (String) -> Unit,
     onStart: () -> Unit,
     onRefreshStatus: () -> Unit
 ) {
-    val columnState = rememberTransformingLazyColumnState()
-    val transformationSpec = rememberTransformationSpec()
-    
-    // Add these specifically for snap/fling support for older watches:
-    val flingBehavior = TransformingLazyColumnDefaults.snapFlingBehavior(columnState)
-    val rotaryScrollableBehavior = RotaryScrollableDefaults.snapBehavior(columnState)
-    
     val context = LocalContext.current
-
     var isStarting by remember { mutableStateOf(false) }
-    var deleteTarget by remember { mutableStateOf<HistoryItemUi?>(null) }
-    var showDelete by remember { mutableStateOf(false) }
 
     LaunchedEffect(permissionsGranted, gpsEnabled) {
         isStarting = false
@@ -451,6 +508,101 @@ fun RunPrepareScreen(
         else -> R.drawable.ic_gps_searching
     }
 
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    painter = painterResource(gpsIcon),
+                    contentDescription = "GPS Status",
+                    tint = gpsColor,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+            
+            Text(
+                text = "Run",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.padding(bottom = 6.dp)
+            )
+
+            Button(
+                modifier = Modifier
+                    .fillMaxWidth(0.9f)
+                    .padding(top = 8.dp),
+                enabled = !isStarting && serviceStatus !is ServiceStatus.Starting,
+                onClick = {
+                    onRefreshStatus()
+
+                    if (!permissionsGranted) {
+                        permissionLauncher.launch(getRequestablePermissions())
+                    } else if (!gpsEnabled) {
+                        val intent = Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
+                        context.startActivity(intent)
+                    } else {
+                        isStarting = true
+                        onStart()
+                    }
+                }
+            ) {
+                Text(
+                    text = when {
+                        !permissionsGranted -> "Grant Permissions"
+                        !gpsEnabled -> "Enable GPS"
+                        isStarting -> "Starting..."
+                        else -> "Start"
+                    },
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun SettingsScreen() {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Text("Coming Soon")
+    }
+}
+
+@Composable
+fun HistoryScreen(
+    history: List<HistoryItemUi>?,
+    expandedId: String?,
+    onToggleExpand: (String) -> Unit,
+    onSyncClick: (String) -> Unit,
+    onDelete: (String) -> Unit
+) {
+    val columnState = rememberTransformingLazyColumnState()
+    val transformationSpec = rememberTransformationSpec()
+    val flingBehavior = TransformingLazyColumnDefaults.snapFlingBehavior(columnState)
+    val rotaryScrollableBehavior = RotaryScrollableDefaults.snapBehavior(columnState)
+
+    var deleteTarget by remember { mutableStateOf<HistoryItemUi?>(null) }
+    var showDelete by remember { mutableStateOf(false) }
+
+    var selectedFilter by remember { mutableStateOf("All") }
+    val displayedHistory = history?.filter {
+        selectedFilter == "All" || it.sport.name.equals(selectedFilter, ignoreCase = true)
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         ScreenScaffold(scrollState = columnState) { contentPadding ->
             TransformingLazyColumn(
@@ -461,111 +613,44 @@ fun RunPrepareScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 item {
-                    Row(
+                    ListHeader(
                         modifier = Modifier
                             .fillMaxWidth()
                             .transformedHeight(this, transformationSpec)
-                            .minimumVerticalContentPadding(ListHeaderDefaults.minimumTopListContentPadding)
-                            .padding(top = 5.dp, bottom = 1.dp),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            painter = painterResource(gpsIcon),
-                            contentDescription = "GPS Status",
-                            tint = gpsColor,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                }
-
-                item {
-                    ListHeader(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .transformedHeight(this, transformationSpec),
-                        transformation = SurfaceTransformation(transformationSpec)
-                    ) {
-                        Text(text = "Run")
-                    }
-                }
-
-                if (!gpsEnabled) {
-                    item {
-                        Text(
-                            text = "GPS is disabled.",
-                            color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(3.dp),
-                            textAlign = TextAlign.Center
-                        )
-                    }
-                }
-
-                if (serviceStatus is ServiceStatus.Error) {
-                    item {
-                        Text(
-                            text = serviceStatus.message,
-                            color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(3.dp),
-                            textAlign = TextAlign.Center
-                        )
-                    }
-                }
-
-                item {
-                    Button(
-                        modifier = Modifier
-                            .fillMaxWidth(0.9f)
-                            .padding(top = 8.dp)
-                            .transformedHeight(this, transformationSpec),
-                        transformation = SurfaceTransformation(transformationSpec),
-                        enabled = !isStarting && serviceStatus !is ServiceStatus.Starting,
-                        onClick = {
-                            onRefreshStatus()
-
-                            if (!permissionsGranted) {
-                                permissionLauncher.launch(getRequestablePermissions())
-                            } else if (!gpsEnabled) {
-                                val intent = Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)
-                                context.startActivity(intent)
-                            } else {
-                                isStarting = true
-                                onStart()
-                            }
-                        }
-                    ) {
-                        Text(
-                            text = when {
-                                !permissionsGranted -> "Grant Permissions"
-                                !gpsEnabled -> "Enable GPS"
-                                isStarting -> "Starting..."
-                                else -> "Start"
-                            },
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                }
-
-                item {
-                    ListHeader(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 12.dp)
-                            .transformedHeight(this, transformationSpec),
+                            .minimumVerticalContentPadding(ListHeaderDefaults.minimumTopListContentPadding),
                         transformation = SurfaceTransformation(transformationSpec)
                     ) {
                         Text(text = "History")
                     }
                 }
+                
+                // Picklist for History
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
+                    ) {
+                        listOf("All", "Run").forEach { filterOpt ->
+                            val isSelected = selectedFilter == filterOpt
+                            Button(
+                                modifier = Modifier.height(32.dp).weight(1f),
+                                onClick = { selectedFilter = filterOpt },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainer,
+                                    contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            ) {
+                                Text(filterOpt, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
+                            }
+                        }
+                    }
+                }
 
                 when {
-                    history == null -> {
-                        // Loading state: render nothing
+                    displayedHistory == null -> {
+                        // Loading state
                     }
-                    history.isEmpty() -> {
+                    displayedHistory.isEmpty() -> {
                         item {
                             Text(
                                 text = "No runs yet",
@@ -577,7 +662,7 @@ fun RunPrepareScreen(
                         }
                     }
                     else -> {
-                        items(history, key = { it.id }) { entry ->
+                        items(displayedHistory, key = { it.id }) { entry ->
                             HistoryRow(
                                 item = entry,
                                 isExpanded = (expandedId == entry.id),
