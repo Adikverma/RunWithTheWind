@@ -14,6 +14,9 @@ interface ActivityDao {
     @Query("SELECT * FROM activities WHERE sport = :sport AND status != 'RECORDING' AND startEpochMs >= :since ORDER BY startEpochMs DESC")
     fun observeHistory(sport: SportType, since: Long): Flow<List<ActivityEntity>>
 
+    @Query("SELECT * FROM activities WHERE status != 'RECORDING' AND startEpochMs >= :since ORDER BY startEpochMs DESC")
+    fun observeAllHistory(since: Long): Flow<List<ActivityEntity>>
+
     @Query("SELECT * FROM activities WHERE status = 'RECORDING'")
     suspend fun interrupted(): List<ActivityEntity>
 

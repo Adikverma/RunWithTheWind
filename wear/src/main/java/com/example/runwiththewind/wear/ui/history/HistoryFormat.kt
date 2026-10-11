@@ -30,7 +30,9 @@ data class HistoryItemUi(
 @DrawableRes
 fun SportType.iconRes(): Int = when (this) {
     SportType.RUN -> R.drawable.ic_run
-    else -> R.drawable.ic_run   // TODO: per-sport icons when those sports are implemented
+    SportType.CYCLE -> R.drawable.ic_ride
+    SportType.SWIM -> R.drawable.ic_swim
+    else -> R.drawable.ic_run
 }
 
 fun formatElapsed(millis: Long): String {

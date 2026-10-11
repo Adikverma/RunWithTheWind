@@ -24,6 +24,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -66,6 +67,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -97,6 +99,7 @@ import androidx.wear.compose.foundation.lazy.TransformingLazyColumnDefaults
 import androidx.wear.compose.foundation.rotary.RotaryScrollableDefaults
 import androidx.wear.compose.material3.CompactButton
 import kotlinx.coroutines.launch
+import com.example.runwiththewind.wear.data.SportType
 import com.example.runwiththewind.wear.ui.history.DeleteConfirmationDialog
 import com.example.runwiththewind.wear.ui.history.HistoryItemUi
 import com.example.runwiththewind.wear.ui.history.HistoryRow
@@ -385,8 +388,7 @@ fun ActivitiesScreen(
                     modifier = Modifier
                         .fillMaxWidth(0.9f)
                         .padding(top = 8.dp)
-                        .transformedHeight(this, transformationSpec)
-                        .minimumVerticalContentPadding(ButtonDefaults.minimumVerticalListContentPadding),
+                        .transformedHeight(this, transformationSpec),
                     transformation = SurfaceTransformation(transformationSpec),
                     onClick = onRunClick
                 ) {
@@ -405,59 +407,101 @@ fun ActivitiesScreen(
                     }
                 }
             }
-            
+
             item {
-                Row(
+                Button(
                     modifier = Modifier
                         .fillMaxWidth(0.9f)
                         .padding(top = 8.dp)
+                        .transformedHeight(this, transformationSpec),
+                    transformation = SurfaceTransformation(transformationSpec),
+                    onClick = onSettingsClick
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_ride),
+                            contentDescription = "Ride",
+                            modifier = Modifier.size(ButtonDefaults.IconSize)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Ride", textAlign = TextAlign.Center)
+                    }
+                }
+            }
+
+            item {
+                Button(
+                    modifier = Modifier
+                        .fillMaxWidth(0.9f)
+                        .padding(top = 8.dp)
+                        .transformedHeight(this, transformationSpec),
+                    transformation = SurfaceTransformation(transformationSpec),
+                    onClick = onSettingsClick
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_swim),
+                            contentDescription = "Swim",
+                            modifier = Modifier.size(ButtonDefaults.IconSize)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Swim", textAlign = TextAlign.Center)
+                    }
+                }
+            }
+            
+            item {
+                Button(
+                    modifier = Modifier
+                        .fillMaxWidth(0.9f)
+                        .padding(top = 8.dp)
+                        .height(36.dp)
+                        .border(
+                            width = 1.dp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                            shape = CircleShape
+                        )
+                        .transformedHeight(this, transformationSpec),
+                    transformation = SurfaceTransformation(transformationSpec),
+                    onClick = onHistoryClick,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.Transparent,
+                        contentColor = MaterialTheme.colorScheme.onSurface
+                    )
+                ) {
+                    Text("History", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+                }
+            }
+
+            item {
+                Button(
+                    modifier = Modifier
+                        .fillMaxWidth(0.9f)
+                        .padding(top = 8.dp)
+                        .height(36.dp)
+                        .border(
+                            width = 1.dp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                            shape = CircleShape
+                        )
                         .transformedHeight(this, transformationSpec)
                         .minimumVerticalContentPadding(ButtonDefaults.minimumVerticalListContentPadding),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
+                    transformation = SurfaceTransformation(transformationSpec),
+                    onClick = onSettingsClick,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.Transparent,
+                        contentColor = MaterialTheme.colorScheme.onSurface
+                    )
                 ) {
-                    Button(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(36.dp)
-                            .border(
-                                width = 1.dp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                                shape = CircleShape
-                            ),
-                        onClick = onHistoryClick,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color.Transparent,
-                            contentColor = MaterialTheme.colorScheme.onSurface
-                        )
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-                            Icon(Icons.Default.Menu, "History", modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("History", style = MaterialTheme.typography.labelSmall)
-                        }
-                    }
-
-                    Button(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(36.dp)
-                            .border(
-                                width = 1.dp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                                shape = CircleShape
-                            ),
-                        onClick = onSettingsClick,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color.Transparent,
-                            contentColor = MaterialTheme.colorScheme.onSurface
-                        )
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-                            Icon(Icons.Default.Settings, "Settings", modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("Settings", style = MaterialTheme.typography.labelSmall)
-                        }
-                    }
+                    Text("Settings", style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
                 }
             }
         }
@@ -598,9 +642,9 @@ fun HistoryScreen(
     var deleteTarget by remember { mutableStateOf<HistoryItemUi?>(null) }
     var showDelete by remember { mutableStateOf(false) }
 
-    var selectedFilter by remember { mutableStateOf("All") }
+    var selectedSports by remember { mutableStateOf(setOf(SportType.RUN)) }
     val displayedHistory = history?.filter {
-        selectedFilter == "All" || it.sport.name.equals(selectedFilter, ignoreCase = true)
+        it.sport in selectedSports
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -624,24 +668,46 @@ fun HistoryScreen(
                     }
                 }
                 
-                // Picklist for History
+                // Minimal multi-select sport filter options
                 item {
                     Row(
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
+                        modifier = Modifier
+                            .fillMaxWidth(0.95f)
+                            .padding(bottom = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
                     ) {
-                        listOf("All", "Run").forEach { filterOpt ->
-                            val isSelected = selectedFilter == filterOpt
-                            Button(
-                                modifier = Modifier.height(32.dp).weight(1f),
-                                onClick = { selectedFilter = filterOpt },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainer,
-                                    contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            ) {
-                                Text(filterOpt, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
+                        listOf(SportType.RUN, SportType.CYCLE, SportType.SWIM).forEach { sport ->
+                            val isSelected = selectedSports.contains(sport)
+                            val borderColor = if (isSelected) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f)
                             }
+                            Text(
+                                text = sport.displayName,
+                                style = if (isSelected) MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold) else MaterialTheme.typography.labelMedium,
+                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .border(
+                                        width = 1.dp,
+                                        color = borderColor,
+                                        shape = CircleShape
+                                    )
+                                    .background(
+                                        if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)
+                                        else Color.Transparent
+                                    )
+                                    .clickable {
+                                        selectedSports = if (isSelected) {
+                                            selectedSports - sport
+                                        } else {
+                                            selectedSports + sport
+                                        }
+                                    }
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
                         }
                     }
                 }
@@ -653,7 +719,7 @@ fun HistoryScreen(
                     displayedHistory.isEmpty() -> {
                         item {
                             Text(
-                                text = "No runs yet",
+                                text = "No Activities Yet",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(top = 8.dp),

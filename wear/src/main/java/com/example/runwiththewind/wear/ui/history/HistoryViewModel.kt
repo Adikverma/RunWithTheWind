@@ -19,7 +19,7 @@ class HistoryViewModel(app: Application) : AndroidViewModel(app) {
     private val sinceMs = System.currentTimeMillis() - RetentionPolicy.daysToMs(RetentionPolicy.ROW_RETENTION_DAYS)
 
     val items: StateFlow<List<HistoryItemUi>?> = repository
-        .observeHistory(SportType.RUN, sinceMs)
+        .observeAllHistory(sinceMs)
         .map { list -> list.map { it.toHistoryItemUi() } }
         .flowOn(Dispatchers.Default)
         .stateIn(
