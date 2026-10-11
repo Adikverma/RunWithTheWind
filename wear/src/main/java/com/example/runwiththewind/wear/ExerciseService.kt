@@ -514,8 +514,20 @@ class ExerciseService : Service() {
         val splitIdx = (cumulativeDistanceMeters / 1000.0).toInt() + 1
         if (splitIdx > lastSplitIndex) {
             lastSplitIndex = splitIdx
-            splitStartMovingMillis = activeMillis
-            splitStartDistance = (splitIdx - 1) * 1000.0
+            val boundaryDistance = (splitIdx - 1) * 1000.0
+            val overshootMeters = cumulativeDistanceMeters - boundaryDistance
+            
+            var paceMinKm = _currentPace.value
+            if (paceMinKm <= 0.0) paceMinKm = _averagePace.value
+            
+            val overshootMillis = if (paceMinKm > 0.0) {
+                (overshootMeters * paceMinKm * 60.0).toLong()
+            } else {
+                0L
+            }
+            
+            splitStartMovingMillis = (activeMillis - overshootMillis).coerceAtLeast(0L)
+            splitStartDistance = boundaryDistance
         }
 
         _currentSplitIndex.value = splitIdx

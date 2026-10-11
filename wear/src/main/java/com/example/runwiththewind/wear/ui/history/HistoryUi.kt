@@ -75,15 +75,35 @@ fun HistoryRow(
                 .padding(horizontal = 14.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = item.title,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+            Row(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(vertical = 12.dp)
+                    .padding(vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = item.titleMain,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (item.titleSub != null) {
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = item.titleSub,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            Text(
+                text = item.distanceText.replace(" km", "k", ignoreCase = true),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1
             )
         }
 
@@ -103,8 +123,8 @@ fun HistoryRow(
                     .fillMaxWidth()
                     .clip(trayShape)
                     .background(WarmTraySurface)
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -112,13 +132,6 @@ fun HistoryRow(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            painter = painterResource(item.sport.iconRes()),
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(Modifier.width(4.dp))
                         Icon(
                             painter = painterResource(R.drawable.outline_earbuds_24),
                             contentDescription = null,

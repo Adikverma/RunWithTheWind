@@ -17,7 +17,8 @@ import java.util.Locale
 data class HistoryItemUi(
     val id: String,
     val sport: SportType,
-    val title: String,          // "7 Jun Morning Run"
+    val titleMain: String,      // e.g. "7 Jun" or custom title
+    val titleSub: String?,      // e.g. "Morning"
     val distanceText: String,   // "7.24 km"
     val paceText: String,       // "4:15 /km"
     val elapsedText: String,    // "2h 24min"
@@ -60,8 +61,9 @@ fun ActivityEntity.toHistoryItemUi(zoneId: ZoneId = ZoneId.systemDefault()): His
         in 17..20 -> "Evening"
         else -> "Night"
     }
-    val generatedTitle = "$dayMonthStr $bucket ${sport.displayName}"
-    val displayTitle = title ?: generatedTitle
+    
+    val displayTitleMain = title ?: dayMonthStr
+    val displayTitleSub = if (title == null) bucket else null
 
     val distStr = "${formatDistance(distanceM)} km"
     val rawPace = formatPace(avgPace)
@@ -81,7 +83,8 @@ fun ActivityEntity.toHistoryItemUi(zoneId: ZoneId = ZoneId.systemDefault()): His
     return HistoryItemUi(
         id = id,
         sport = sport,
-        title = displayTitle,
+        titleMain = displayTitleMain,
+        titleSub = displayTitleSub,
         distanceText = distStr,
         paceText = paceStr,
         elapsedText = elapsedStr,

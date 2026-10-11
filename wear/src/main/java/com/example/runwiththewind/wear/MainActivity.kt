@@ -37,7 +37,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.pager.VerticalPager
+import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
@@ -73,6 +73,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.wear.compose.foundation.lazy.TransformingLazyColumn
+import androidx.wear.compose.foundation.lazy.items
 import androidx.wear.compose.foundation.lazy.rememberTransformingLazyColumnState
 import androidx.wear.compose.material3.AppScaffold
 import androidx.wear.compose.material3.Button
@@ -85,6 +86,11 @@ import androidx.wear.compose.material3.SurfaceTransformation
 import androidx.wear.compose.material3.Text
 import androidx.wear.compose.material3.lazy.rememberTransformationSpec
 import androidx.wear.compose.material3.lazy.transformedHeight
+import androidx.wear.compose.material3.ListHeaderDefaults
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.wear.compose.foundation.lazy.TransformingLazyColumnDefaults
+import androidx.wear.compose.foundation.rotary.RotaryScrollableDefaults
+import kotlinx.coroutines.launch
 import com.example.runwiththewind.wear.ui.history.DeleteConfirmationDialog
 import com.example.runwiththewind.wear.ui.history.HistoryItemUi
 import com.example.runwiththewind.wear.ui.history.HistoryRow
@@ -326,7 +332,7 @@ class MainActivity : ComponentActivity() {
 }
 
 enum class ScreenState {
-    ACTIVITIES, RUN_PREPARE, TRACKING, SUMMARY
+    ACTIVITIES, RUN_PREPARE, TRACKING, SUMMARY, HISTORY, SETTINGS
 }
 
 data class RunSummary(
@@ -350,7 +356,8 @@ fun ActivitiesScreen(onRunClick: () -> Unit) {
                 ListHeader(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .transformedHeight(this, transformationSpec),
+                        .transformedHeight(this, transformationSpec)
+                        .minimumVerticalContentPadding(ListHeaderDefaults.minimumTopListContentPadding),
                     transformation = SurfaceTransformation(transformationSpec)
                 ) {
                     Text(text = "Activities")
@@ -361,7 +368,8 @@ fun ActivitiesScreen(onRunClick: () -> Unit) {
                     modifier = Modifier
                         .fillMaxWidth(0.9f)
                         .padding(top = 8.dp)
-                        .transformedHeight(this, transformationSpec),
+                        .transformedHeight(this, transformationSpec)
+                        .minimumVerticalContentPadding(ButtonDefaults.minimumVerticalListContentPadding),
                     transformation = SurfaceTransformation(transformationSpec),
                     onClick = onRunClick
                 ) {
@@ -400,6 +408,11 @@ fun RunPrepareScreen(
 ) {
     val columnState = rememberTransformingLazyColumnState()
     val transformationSpec = rememberTransformationSpec()
+    
+    // Add these specifically for snap/fling support for older watches:
+    val flingBehavior = TransformingLazyColumnDefaults.snapFlingBehavior(columnState)
+    val rotaryScrollableBehavior = RotaryScrollableDefaults.snapBehavior(columnState)
+    
     val context = LocalContext.current
 
     var isStarting by remember { mutableStateOf(false) }
@@ -443,12 +456,16 @@ fun RunPrepareScreen(
             TransformingLazyColumn(
                 state = columnState,
                 contentPadding = contentPadding,
+                flingBehavior = flingBehavior,
+                rotaryScrollableBehavior = rotaryScrollableBehavior,
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 item {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .transformedHeight(this, transformationSpec)
+                            .minimumVerticalContentPadding(ListHeaderDefaults.minimumTopListContentPadding)
                             .padding(top = 5.dp, bottom = 1.dp),
                         horizontalArrangement = Arrangement.Center,
                         verticalAlignment = Alignment.CenterVertically
@@ -560,23 +577,21 @@ fun RunPrepareScreen(
                         }
                     }
                     else -> {
-                        history.forEach { entry ->
-                            item(key = entry.id) {
-                                HistoryRow(
-                                    item = entry,
-                                    isExpanded = (expandedId == entry.id),
-                                    onToggleExpand = onToggleExpand,
-                                    onSyncClick = onSyncClick,
-                                    onPendingDelete = {
-                                        deleteTarget = it
-                                        showDelete = true
-                                    },
-                                    modifier = Modifier
-                                        .fillMaxWidth(0.9f)
-                                        .padding(top = 6.dp)
-                                        .transformedHeight(this, transformationSpec)
-                                )
-                            }
+                        items(history, key = { it.id }) { entry ->
+                            HistoryRow(
+                                item = entry,
+                                isExpanded = (expandedId == entry.id),
+                                onToggleExpand = onToggleExpand,
+                                onSyncClick = onSyncClick,
+                                onPendingDelete = {
+                                    deleteTarget = it
+                                    showDelete = true
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth(0.9f)
+                                    .padding(top = 6.dp)
+                                    .transformedHeight(this, transformationSpec)
+                            )
                         }
                     }
                 }
@@ -605,38 +620,12 @@ fun WorkoutScreen(
     onTogglePause: () -> Unit,
     onFinish: () -> Unit
 ) {
-    val verticalPagerState = rememberPagerState(pageCount = { 2 })
-
-    VerticalPager(
-        state = verticalPagerState,
-        modifier = Modifier.fillMaxSize()
-    ) { verticalPage ->
-        if (verticalPage == 0) {
-            MetricsSingleScreen(
-                service = service,
-                onTogglePause = onTogglePause
-            )
-        } else {
-            ControlsScreen(
-                service = service,
-                onFinish = onFinish
-            )
-        }
-    }
-}
-
-@Composable
-fun MetricsSingleScreen(
-    service: ExerciseService,
-    onTogglePause: () -> Unit
-) {
-    val pageCount = 3
-    var pageIndex by remember { mutableIntStateOf(0) }
-    var accumulatedRotaryDelta by remember { mutableFloatStateOf(0f) }
-    var dragAccum by remember { mutableFloatStateOf(0f) }
+    val pageCount = 4
+    val pagerState = rememberPagerState(initialPage = 1, pageCount = { pageCount })
     val focusRequester = remember { FocusRequester() }
+    var accumulatedRotaryDelta by remember { mutableFloatStateOf(0f) }
     val rotaryThreshold = 30f
-    val swipeThresholdPx = with(LocalDensity.current) { 35.dp.toPx() }
+    val coroutineScope = rememberCoroutineScope()
 
     val uiState by service.uiState.collectAsStateWithLifecycle()
 
@@ -650,32 +639,16 @@ fun MetricsSingleScreen(
                     }
                 )
             }
-            .pointerInput(Unit) {
-                detectHorizontalDragGestures(
-                    onDragStart = { dragAccum = 0f },
-                    onHorizontalDrag = { change, dragAmount ->
-                        change.consume()
-                        dragAccum += dragAmount
-                    },
-                    onDragEnd = {
-                        if (dragAccum <= -swipeThresholdPx) {
-                            pageIndex = (pageIndex + 1) % pageCount
-                        } else if (dragAccum >= swipeThresholdPx) {
-                            pageIndex = (pageIndex - 1 + pageCount) % pageCount
-                        }
-                        dragAccum = 0f
-                    },
-                    onDragCancel = { dragAccum = 0f }
-                )
-            }
             .onRotaryScrollEvent { event ->
                 accumulatedRotaryDelta += event.verticalScrollPixels
                 if (accumulatedRotaryDelta >= rotaryThreshold) {
-                    pageIndex = (pageIndex + 1) % pageCount
+                    val nextPage = (pagerState.currentPage + 1).coerceAtMost(pageCount - 1)
+                    coroutineScope.launch { pagerState.animateScrollToPage(nextPage) }
                     accumulatedRotaryDelta = 0f
                     true
                 } else if (accumulatedRotaryDelta <= -rotaryThreshold) {
-                    pageIndex = (pageIndex - 1 + pageCount) % pageCount
+                    val prevPage = (pagerState.currentPage - 1).coerceAtLeast(0)
+                    coroutineScope.launch { pagerState.animateScrollToPage(prevPage) }
                     accumulatedRotaryDelta = 0f
                     true
                 } else {
@@ -686,10 +659,16 @@ fun MetricsSingleScreen(
             .focusable(),
         contentAlignment = Alignment.Center
     ) {
-        when (pageIndex) {
-            0 -> Screen1Overview(uiState)
-            1 -> Screen2SplitInfo(uiState)
-            2 -> Screen3HealthElevation(uiState)
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize()
+        ) { page ->
+            when (page) {
+                0 -> ControlsScreen(service = service, onFinish = onFinish)
+                1 -> Screen1Overview(uiState)
+                2 -> Screen2SplitInfo(uiState)
+                3 -> Screen3HealthElevation(uiState)
+            }
         }
 
         if (uiState.isPaused) {
@@ -710,10 +689,10 @@ fun MetricsSingleScreen(
             repeat(pageCount) { index ->
                 Box(
                     modifier = Modifier
-                        .size(if (index == pageIndex) 6.dp else 4.dp)
+                        .size(if (index == pagerState.currentPage) 6.dp else 4.dp)
                         .clip(CircleShape)
                         .background(
-                            if (index == pageIndex)
+                            if (index == pagerState.currentPage)
                                 MaterialTheme.colorScheme.primary
                             else
                                 MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
@@ -777,9 +756,9 @@ fun Screen2SplitInfo(uiState: WorkoutUiState) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        HeroMetricDisplay("Distance [km]", formatDistance(uiState.distanceMeters))
-        MetricDisplay("Split Pace [min/km]", formatPace(uiState.splitPace))
-        MetricDisplay("Pace [min/km]", formatPace(uiState.currentPace))
+        HeroMetricDisplay("Split Pace [min/km]", formatPace(uiState.splitPace))
+        MetricDisplay("Current Pace [min/km]", formatPace(uiState.currentPace))
+        MetricDisplay("Distance [km]", formatDistance(uiState.distanceMeters))
         MetricDisplay("Moving Time", formatTime(uiState.activeMillis))
     }
 }
